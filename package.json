@@ -15,16 +15,17 @@
     "date-fns": "latest",
     "lucide-react": "latest",
     "next": "latest",
+    "nodemailer": "^9.0.3",
     "qrcode": "latest",
     "react": "latest",
     "react-dom": "latest",
     "resend": "latest",
     "stripe": "latest",
-    "twilio": "latest",
-    "nodemailer": "latest"
+    "twilio": "latest"
   },
   "devDependencies": {
     "@types/node": "latest",
+    "@types/nodemailer": "latest",
     "@types/qrcode": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
@@ -34,7 +35,6 @@
     "postcss": "latest",
     "tailwindcss": "^3.4.17",
     "tsx": "latest",
-    "typescript": "latest",
-    "@types/nodemailer": "latest"
+    "typescript": "latest"
   }
 }
