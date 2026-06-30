@@ -24,15 +24,7 @@ Open:
 http://localhost:3000/meal-pass
 ```
 
-The app works in demo/local mode immediately using browser storage.
-
-Demo logins:
-
-```txt
-Customer: kumail@example.com / demo123
-Staff: staff@afghankabob.ca / staff123
-Owner: owner@afghankabob.ca / owner123
-```
+The app can run locally using browser storage while you connect Supabase. For production, create real users in Supabase Auth and matching rows in the `profiles` table.
 
 ## 2. Pages
 
@@ -105,6 +97,18 @@ Then import the repo into Vercel and add the same environment variables.
 - Add role-based route protection for `/staff` and `/owner`.
 
 
-## Deployment
+## Login fix in v5
 
-Use `DEPLOYMENT.md` for the Supabase, Resend, and Vercel setup. The app also includes `/api/health` so you can confirm environment variables are present after deploy.
+This version persists the active session in browser storage and also checks the Supabase Auth session on page load. Before this, login could succeed and then fail after redirect because React state was lost when `/account`, `/staff`, or `/owner` loaded.
+
+For staff and owner access, create a user in Supabase Auth and a matching profile row with the same email and the correct role:
+
+```sql
+insert into profiles (id, role, full_name, email, phone, member_id, pin_code)
+values ('PASTE_AUTH_USER_ID', 'staff', 'Afghan Kabob Staff', 'staff@afghankabob.ca', '', 'STAFF-001', null);
+
+insert into profiles (id, role, full_name, email, phone, member_id, pin_code)
+values ('PASTE_AUTH_USER_ID', 'owner', 'Afghan Kabob Owner', 'owner@afghankabob.ca', '', 'OWNER-001', null);
+```
+
+If you want PIN-only login for early testing, set `pin_code` on those profiles and use that value as the password/PIN.

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { mealPlans, menuItems, getPlan } from "@/lib/plans";
 import { memberId, qrUrl } from "@/lib/qr";
@@ -23,6 +24,9 @@ type Store = {
 const nowIso = () => new Date().toISOString();
 const money = (n: number) => `$${n.toFixed(2)}`;
 const STORAGE = "akr-next-store-v2";
+const SESSION = "akr-active-session-v1";
+
+type ActiveSession = { id: string; role: Role; email?: string | null };
 
 const demoCustomerId = "demo-customer-1";
 const demoStaffId = "demo-staff-1";
@@ -83,14 +87,67 @@ function daysToRenewal(freq: string) {
 }
 
 export function AppShell({ view }: { view: View }) {
+  const router = useRouter();
   const [store, setStore] = useState<Store>(initialStore());
   const [activeRole, setActiveRole] = useState<Role | null>(null);
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE);
-    if (raw) setStore(JSON.parse(raw));
+    let mounted = true;
+
+    async function boot() {
+      const rawStore = localStorage.getItem(STORAGE);
+      if (rawStore) {
+        try {
+          setStore(JSON.parse(rawStore));
+        } catch {
+          localStorage.removeItem(STORAGE);
+        }
+      }
+
+      const rawSession = localStorage.getItem(SESSION);
+      if (rawSession) {
+        try {
+          const session = JSON.parse(rawSession) as ActiveSession;
+          setActiveRole(session.role);
+          setActiveUserId(session.id);
+        } catch {
+          localStorage.removeItem(SESSION);
+        }
+      }
+
+      if (isSupabaseConfigured) {
+        const supabase = supabaseBrowser();
+        const { data: authData } = await supabase!.auth.getUser();
+        const authEmail = authData.user?.email?.toLowerCase();
+        if (authEmail) {
+          const { data: profile } = await supabase!
+            .from("profiles")
+            .select("*")
+            .eq("email", authEmail)
+            .maybeSingle();
+          if (profile && mounted) {
+            const typed = profile as Profile;
+            setStore((current) => ({
+              ...current,
+              profiles: current.profiles.some((p) => p.id === typed.id)
+                ? current.profiles.map((p) => p.id === typed.id ? typed : p)
+                : [typed, ...current.profiles]
+            }));
+            setActiveRole(typed.role);
+            setActiveUserId(typed.id);
+            localStorage.setItem(SESSION, JSON.stringify({ id: typed.id, role: typed.role, email: typed.email }));
+          }
+        }
+      }
+
+      if (mounted) setAuthReady(true);
+    }
+
+    boot();
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
@@ -99,27 +156,95 @@ export function AppShell({ view }: { view: View }) {
 
   const activeProfile = store.profiles.find((p) => p.id === activeUserId) || null;
 
+  function persistSession(profile: Profile) {
+    setActiveRole(profile.role);
+    setActiveUserId(profile.id);
+    localStorage.setItem(SESSION, JSON.stringify({ id: profile.id, role: profile.role, email: profile.email }));
+  }
+
+  async function refreshStoreFromSupabase() {
+    if (!isSupabaseConfigured) return;
+    const supabase = supabaseBrowser();
+    const [profiles, passes, orders, orderItems, redemptions, messages] = await Promise.all([
+      supabase!.from("profiles").select("*").order("created_at", { ascending: false }),
+      supabase!.from("meal_passes").select("*").order("created_at", { ascending: false }),
+      supabase!.from("orders").select("*").order("created_at", { ascending: false }),
+      supabase!.from("order_items").select("*"),
+      supabase!.from("redemptions").select("*").order("created_at", { ascending: false }),
+      supabase!.from("messages").select("*").order("created_at", { ascending: false })
+    ]);
+    if (profiles.error || passes.error || orders.error || orderItems.error || redemptions.error || messages.error) return;
+    const groupedItems: Record<string, OrderItem[]> = {};
+    (orderItems.data || []).forEach((item: any) => {
+      const orderId = String(item.order_id);
+      groupedItems[orderId] = groupedItems[orderId] || [];
+      groupedItems[orderId].push({ name: item.item_name, category: item.category, price: Number(item.price), quantity: Number(item.quantity || 1) });
+    });
+    setStore((current) => ({
+      ...current,
+      profiles: (profiles.data || []) as Profile[],
+      passes: (passes.data || []).map((p: any) => ({ ...p, price: Number(p.price) })) as MealPass[],
+      orders: (orders.data || []).map((o: any) => ({ ...o, subtotal: Number(o.subtotal), tax: Number(o.tax), total: Number(o.total) })) as Order[],
+      orderItems: groupedItems,
+      redemptions: (redemptions.data || []) as Redemption[],
+      messages: (messages.data || []) as Message[]
+    }));
+  }
+
   async function login(email: string, password: string, role?: Role) {
     const clean = email.trim().toLowerCase();
 
     if (isSupabaseConfigured) {
       const supabase = supabaseBrowser();
+
       const auth = await supabase?.auth.signInWithPassword({ email: clean, password });
       if (!auth?.error) {
-        const { data: profile } = await supabase!
+        const { data: profile, error: profileError } = await supabase!
           .from("profiles")
           .select("*")
           .eq("email", clean)
           .maybeSingle();
+
+        if (profileError) {
+          setNotice(`Login found your account, but profile lookup failed: ${profileError.message}`);
+          return false;
+        }
+
         if (profile && (!role || profile.role === role)) {
           const typed = profile as Profile;
-          setStore((s) => ({ ...s, profiles: s.profiles.some((p) => p.id === typed.id) ? s.profiles.map((p) => p.id === typed.id ? typed : p) : [typed, ...s.profiles] }));
-          setActiveRole(typed.role);
-          setActiveUserId(typed.id);
+          setStore((s) => ({
+            ...s,
+            profiles: s.profiles.some((p) => p.id === typed.id)
+              ? s.profiles.map((p) => p.id === typed.id ? typed : p)
+              : [typed, ...s.profiles]
+          }));
+          persistSession(typed);
+          await refreshStoreFromSupabase();
           setNotice(`Logged in as ${typed.full_name}.`);
           return true;
         }
+
+        setNotice(role ? `This account is not a ${role} account.` : "No profile row exists for this login.");
+        return false;
       }
+
+      // Customer fallback: allow email + PIN/password against profiles.pin_code.
+      // This helps Rewards / Meal Pass users log in even if email confirmation is still enabled in Supabase Auth.
+      const { data: profile } = await supabase!
+        .from("profiles")
+        .select("*")
+        .eq("email", clean)
+        .maybeSingle();
+      if (profile && (!role || profile.role === role) && profile.pin_code && profile.pin_code === password) {
+        const typed = profile as Profile;
+        persistSession(typed);
+        await refreshStoreFromSupabase();
+        setNotice(`Logged in as ${typed.full_name}.`);
+        return true;
+      }
+
+      setNotice(auth?.error?.message || "Login failed. Check email and password/PIN.");
+      return false;
     }
 
     const profile = store.profiles.find((p) => p.email?.toLowerCase() === clean && (!role || p.role === role));
@@ -127,16 +252,18 @@ export function AppShell({ view }: { view: View }) {
       setNotice("Login failed. Check email and password/PIN.");
       return false;
     }
-    setActiveRole(profile.role);
-    setActiveUserId(profile.id);
+    persistSession(profile);
     setNotice(`Logged in as ${profile.full_name}.`);
     return true;
   }
 
-  function logout() {
+  async function logout() {
+    if (isSupabaseConfigured) await supabaseBrowser()?.auth.signOut();
     setActiveRole(null);
     setActiveUserId(null);
+    localStorage.removeItem(SESSION);
     setNotice("Logged out.");
+    router.push("/login");
   }
 
   async function saveProfile(profile: Profile, password: string) {
@@ -148,23 +275,42 @@ export function AppShell({ view }: { view: View }) {
       await supabase?.from("profiles").upsert(savedProfile);
     }
     setStore((s) => ({ ...s, profiles: [savedProfile, ...s.profiles.filter((p) => p.id !== savedProfile.id)], passwords: { ...s.passwords, [savedProfile.email.toLowerCase()]: password } }));
-    setActiveRole(savedProfile.role);
-    setActiveUserId(savedProfile.id);
+    persistSession(savedProfile);
     return savedProfile;
   }
 
   async function addMessage(customerId: string, type: string, subject: string, body: string, channel: "email" | "sms" = "email") {
     const msg: Message = { id: crypto.randomUUID(), customer_id: customerId, channel, message_type: type, subject, body, status: "queued", created_at: nowIso() };
     setStore((s) => ({ ...s, messages: [msg, ...s.messages] }));
+    if (isSupabaseConfigured) {
+      await supabaseBrowser()?.from("messages").insert(msg);
+    }
     const customer = store.profiles.find((p) => p.id === customerId);
     if (customer?.email && channel === "email") {
       try {
         const res = await fetch("/api/email/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: customer.email, subject, body }) });
-        setStore((s) => ({ ...s, messages: s.messages.map((m) => m.id === msg.id ? { ...m, status: res.ok ? "sent" : "failed", sent_at: res.ok ? nowIso() : null } : m) }));
+        const updated: Pick<Message, "status" | "sent_at"> = { status: res.ok ? "sent" : "failed", sent_at: res.ok ? nowIso() : null };
+        setStore((s) => ({ ...s, messages: s.messages.map((m) => m.id === msg.id ? { ...m, ...updated } : m) }));
+        if (isSupabaseConfigured) await supabaseBrowser()?.from("messages").update(updated).eq("id", msg.id);
       } catch {
         setStore((s) => ({ ...s, messages: s.messages.map((m) => m.id === msg.id ? { ...m, status: "failed" } : m) }));
+        if (isSupabaseConfigured) await supabaseBrowser()?.from("messages").update({ status: "failed" }).eq("id", msg.id);
       }
     }
+  }
+
+  const needsCustomer = view === "account";
+  const needsStaff = view === "staff";
+  const needsOwner = view === "owner";
+  const blocked = (needsCustomer && activeRole !== "customer") || (needsStaff && activeRole !== "staff") || (needsOwner && activeRole !== "owner");
+
+  if (!authReady && (needsCustomer || needsStaff || needsOwner)) {
+    return <main className="page-shell auth-shell"><div className="card p-8 text-center font-black text-kabob-green">Checking your session…</div></main>;
+  }
+
+  if (blocked) {
+    const href = needsCustomer ? "/login" : "/team-login";
+    return <main className="page-shell auth-shell"><div className="card p-8 md:p-10 text-center max-w-[560px]"><h1 className="text-4xl font-black">Login required</h1><p className="text-[#74675d] font-semibold mt-3">Please log in to access this page.</p><a className="btn-primary mt-6" href={href}>Go to login</a></div></main>;
   }
 
   return (
@@ -215,7 +361,14 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
     const orderId = crypto.randomUUID();
     const pass: MealPass = { id: passId, customer_id: savedCustomer.id, frequency: plan.frequency, tier: plan.tier, meals_included: plan.meals, meals_used: 0, price: plan.price, status: "active", start_date: new Date().toISOString().slice(0, 10), renewal_date: daysToRenewal(plan.frequency) };
     const order: Order = { id: orderId, customer_id: savedCustomer.id, meal_pass_id: passId, order_type: String(form.get("payMode")) === "in_store" ? "in_store" : "online", subtotal: plan.price, tax: +(plan.price * 0.11).toFixed(2), total: +(plan.price * 1.11).toFixed(2), payment_status: String(form.get("payMode")) === "in_store" ? "pending" : "paid", created_at: nowIso() };
-    setStore((s) => ({ ...s, passes: [pass, ...s.passes], orders: [order, ...s.orders], orderItems: { ...s.orderItems, [orderId]: items.length ? items : eligibleItems.slice(0, plan.meals).map((i) => ({ ...i, quantity: 1 })) } }));
+    const chosenItems = items.length ? items : eligibleItems.slice(0, plan.meals).map((i) => ({ ...i, quantity: 1 }));
+    setStore((s) => ({ ...s, passes: [pass, ...s.passes], orders: [order, ...s.orders], orderItems: { ...s.orderItems, [orderId]: chosenItems } }));
+    if (isSupabaseConfigured) {
+      const supabase = supabaseBrowser();
+      await supabase?.from("meal_passes").insert(pass);
+      await supabase?.from("orders").insert(order);
+      await supabase?.from("order_items").insert(chosenItems.map((i) => ({ order_id: orderId, item_name: i.name, category: i.category, price: i.price, quantity: i.quantity })));
+    }
     await addMessage(savedCustomer.id, "meal_pass_created", "Your Afghan Kabob meal pass is ready", `Your ${plan.tier} pass is active. Member ID: ${savedCustomer.member_id}.`);
     setDoneCustomer(savedCustomer);
   }
@@ -406,6 +559,11 @@ function Staff({ store, setStore, addMessage, logout }: { store: Store; setStore
     const remaining = pass.meals_included - pass.meals_used - 1;
     const red: Redemption = { id: crypto.randomUUID(), customer_id: selected.id, meal_pass_id: pass.id, staff_id: demoStaffId, item_name: item.name, category: item.category, meals_remaining: remaining, created_at: nowIso() };
     setStore((s) => ({ ...s, passes: s.passes.map((p) => p.id === pass.id ? { ...p, meals_used: p.meals_used + 1 } : p), redemptions: [red, ...s.redemptions] }));
+    if (isSupabaseConfigured) {
+      const supabase = supabaseBrowser();
+      await supabase?.from("meal_passes").update({ meals_used: pass.meals_used + 1 }).eq("id", pass.id);
+      await supabase?.from("redemptions").insert(red);
+    }
     await addMessage(selected.id, "meal_redeemed", "Your meal pass was used", `${item.name} redeemed. ${remaining} meals remaining.`);
   }
   return <section><div className="flex justify-between items-center mb-8"><h1 className="text-5xl font-black">Staff check-in</h1><button onClick={logout} className="btn-secondary">Logout</button></div><div className="grid lg:grid-cols-[340px_1fr] gap-8"><div className="card p-5"><h2 className="text-2xl font-black mb-4">Search / scan</h2><input className="input mb-4" placeholder="Name, phone, email, member ID" value={query} onChange={(e)=>setQuery(e.target.value)} /><button className="btn-primary w-full mb-5" onClick={()=>setQuery("AKR-AA4QN")}>Scan QR</button><div className="space-y-3 max-h-[600px] overflow-auto">{filtered.map((c)=>{const p=store.passes.find(x=>x.customer_id===c.id);return <button key={c.id} onClick={()=>setSelectedId(c.id)} className="w-full text-left border border-kabob-sand rounded-2xl p-3 hover:bg-kabob-cream"><div className="font-black">{c.full_name}</div><div className="text-sm text-[#766d65]">{c.member_id} • {c.phone}</div><div className="font-black text-kabob-green">{p ? `${p.meals_included-p.meals_used}/${p.meals_included} meals left` : "Rewards only"}</div></button>})}</div></div>{selected && <div className="space-y-6"><div className="card p-8 grid lg:grid-cols-[1fr_260px] gap-8"><div><h2 className="text-3xl font-black">{selected.full_name}</h2><p className="font-bold mt-2 text-[#74675d]">{selected.member_id} • {selected.phone} • {selected.email}</p><div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4 mt-7"><Metric label="Date of birth" value={formatDate(selected.date_of_birth)}/><Metric label="Anniversary" value={formatDate(selected.anniversary)}/><Metric label="Tier" value={pass?.tier || "Rewards only"}/><Metric label="Meals left" value={pass ? `${pass.meals_included-pass.meals_used}/${pass.meals_included}` : "—"}/></div><h3 className="text-xl font-black mt-7 mb-3">Redeem meal</h3><select className="input mb-4" value={itemName} onChange={(e)=>setItemName(e.target.value)}>{eligible.map((i)=><option key={i.name}>{i.name}</option>)}</select><button className="btn-primary mr-3" onClick={redeem}>Redeem selected meal</button><button className="btn-secondary" onClick={()=>addMessage(selected.id,"balance","Your Afghan Kabob balance",`You have ${pass ? pass.meals_included-pass.meals_used : 0} meals remaining.`)}>Send balance</button></div><div className="text-center"><Image alt="QR" src={qrUrl(selected.member_id || selected.id)} width={230} height={230} className="mx-auto"/><div className="font-black mt-3">{selected.member_id}</div></div></div><CustomerTables customer={selected} store={store}/></div>}</div></section>;

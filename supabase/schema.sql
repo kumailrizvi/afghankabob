@@ -82,8 +82,8 @@ insert into profiles (id, role, full_name, email, phone, date_of_birth, annivers
 values
 ('00000000-0000-0000-0000-000000000101','customer','Kumail Rizvi','kumail@example.com','3065557788','1998-07-10','2026-12-05','AKR-AA4QN','1234'),
 ('00000000-0000-0000-0000-000000000102','customer','Sara Ahmed','sara@example.com','3065551122','1996-08-14','2026-10-01','AKR-XZXVM','2222'),
-('00000000-0000-0000-0000-000000000201','staff','Staff User','staff@afghankabob.ca','',null,null,null,null),
-('00000000-0000-0000-0000-000000000301','owner','Owner User','owner@afghankabob.ca','',null,null,null,null)
+('00000000-0000-0000-0000-000000000201','staff','Staff User','staff@afghankabob.ca','',null,null,null,'staff123'),
+('00000000-0000-0000-0000-000000000301','owner','Owner User','owner@afghankabob.ca','',null,null,null,'owner123')
 on conflict (id) do nothing;
 
 insert into meal_passes (customer_id, frequency, tier, meals_included, meals_used, price, status, renewal_date)
