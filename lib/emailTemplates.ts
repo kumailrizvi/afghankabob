@@ -1,3 +1,7 @@
+const restaurantAddress = "100 2 Ave S #3, Saskatoon, SK S7K 3S9";
+const restaurantPhone = "(306) 477-2255";
+const restaurantMenu = "afghankabob.ca";
+
 export function baseEmail({ title, preview, body }: { title: string; preview: string; body: string }) {
   return `
   <!doctype html>
@@ -13,7 +17,13 @@ export function baseEmail({ title, preview, body }: { title: string; preview: st
             <h1 style="margin:0 0 14px;font-size:28px;line-height:1.15;color:#1f1b18;">${title}</h1>
             <div style="font-size:16px;line-height:1.6;color:#433b34;">${body}</div>
           </td></tr>
-          <tr><td style="padding:18px 24px;color:#766d65;font-size:12px;border-top:1px solid #eee6dc;">Afghan Kabob & Donair • You can unsubscribe from promotional messages anytime.</td></tr>
+          <tr><td style="padding:20px 24px;background:#fbf7f1;border-top:1px solid #eee6dc;color:#433b34;font-size:14px;line-height:1.55;">
+            <strong>Afghan Kabob & Donair</strong><br>
+            Address: ${restaurantAddress}<br>
+            Phone: ${restaurantPhone}<br>
+            Menu: <a href="https://${restaurantMenu}" style="color:#10583f;font-weight:700;text-decoration:none;">${restaurantMenu}</a>
+          </td></tr>
+          <tr><td style="padding:14px 24px;color:#766d65;font-size:12px;border-top:1px solid #eee6dc;">You can unsubscribe from promotional messages anytime.</td></tr>
         </table>
       </td></tr>
     </table>

@@ -676,6 +676,17 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
   const selectedMealOptions = selectedMealStatus.length
     ? selectedMealStatus.flatMap((i) => Array.from({ length: i.remaining }, () => ({ name: i.name, category: i.category, price: i.price, remaining: i.remaining, total: i.total })))
     : [];
+
+  function selectedMealsBalanceText(afterRedeemedItem?: string) {
+    if (!selectedMealStatus.length) return "No selected meals found on this pass.";
+    return selectedMealStatus
+      .map((i) => {
+        const used = i.redeemed + (afterRedeemedItem === i.name ? 1 : 0);
+        const left = Math.max(i.total - used, 0);
+        return `${i.name}: ${left}/${i.total} left`;
+      })
+      .join("\n");
+  }
   const pendingInStoreOrders = customerOrders.filter((o) => o.order_type === "in_store" && !["paid", "paid_in_store"].includes(o.payment_status));
   const [itemName, setItemName] = useState(selectedMealOptions[0]?.name || "");
   const [editUnlocked, setEditUnlocked] = useState(false);
@@ -701,7 +712,12 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
       await supabase?.from("meal_passes").update({ meals_used: pass.meals_used + 1 }).eq("id", pass.id);
       await supabase?.from("redemptions").insert(red);
     }
-    await addMessage(selected.id, "meal_redeemed", "Your meal pass was used", `${item.name} redeemed. ${remaining} meals remaining.`);
+    await addMessage(
+      selected.id,
+      "meal_redeemed",
+      "Your meal pass was used",
+      `${item.name} redeemed. ${remaining} total meals remaining.\n\nRemaining in this pass:\n${selectedMealsBalanceText(item.name)}`
+    );
   }
 
   async function markInStorePaid(order: Order) {
@@ -770,7 +786,7 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
                 <select className="input mb-4" value={itemName} onChange={(e)=>setItemName(e.target.value)} disabled={!selectedMealOptions.length}>{selectedMealOptions.length ? selectedMealOptions.map((i, idx)=><option key={`${i.name}-${idx}`} value={i.name}>{i.name} — {i.remaining} of {i.total} left — {money(i.price)}</option>) : <option>No selected meals remaining on this customer pass</option>}</select>
                 <div className="flex flex-wrap gap-3">
                   <button className="btn-primary" onClick={redeem}>Redeem selected meal</button>
-                  <button className="btn-secondary" onClick={()=>addMessage(selected.id,"balance","Your Afghan Kabob balance",`You have ${pass ? pass.meals_included-pass.meals_used : 0} meals remaining.`)}>Send balance</button>
+                  <button className="btn-secondary" onClick={()=>addMessage(selected.id,"balance","Your Afghan Kabob balance",`You have ${pass ? pass.meals_included-pass.meals_used : 0} total meals remaining.\n\nRemaining in this pass:\n${selectedMealsBalanceText()}`)}>Send balance</button>
                 </div>
               </div>
             </div>
