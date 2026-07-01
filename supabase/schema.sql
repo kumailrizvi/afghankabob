@@ -197,3 +197,37 @@ for all to authenticated using (true) with check (true);
 
 -- v10: payment confirmation for in-store orders
 alter table public.orders add column if not exists paid_at timestamp with time zone;
+
+
+-- v11: public meal pass page image reads + Supabase Storage bucket for menu images.
+-- Public customers need to read active menu items and plan settings before logging in.
+drop policy if exists "menu_items_read_public" on public.menu_items;
+create policy "menu_items_read_public" on public.menu_items
+for select to anon, authenticated using (active = true);
+
+drop policy if exists "meal_plan_settings_read_public" on public.meal_plan_settings;
+create policy "meal_plan_settings_read_public" on public.meal_plan_settings
+for select to anon, authenticated using (active = true);
+
+insert into storage.buckets (id, name, public)
+values ('menu-images', 'menu-images', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "menu_images_public_read" on storage.objects;
+create policy "menu_images_public_read"
+on storage.objects for select
+to anon, authenticated
+using (bucket_id = 'menu-images');
+
+drop policy if exists "menu_images_authenticated_upload" on storage.objects;
+create policy "menu_images_authenticated_upload"
+on storage.objects for insert
+to authenticated
+with check (bucket_id = 'menu-images');
+
+drop policy if exists "menu_images_authenticated_update" on storage.objects;
+create policy "menu_images_authenticated_update"
+on storage.objects for update
+to authenticated
+using (bucket_id = 'menu-images')
+with check (bucket_id = 'menu-images');

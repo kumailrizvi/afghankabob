@@ -63,6 +63,33 @@ function normalizePhoneForSave(value: string) {
   return formatCanadianPhoneInput(value);
 }
 
+function sanitizeStoreForLocalStorage(store: Store): Store {
+  return {
+    ...store,
+    menuItems: (store.menuItems || []).map((item) => ({
+      ...item,
+      // Never persist base64 uploads in localStorage. Large data URLs can crash the app after upload.
+      image_url: item.image_url?.startsWith("data:") ? "" : item.image_url
+    }))
+  };
+}
+
+async function getMenuImageUrlFromFile(file: File): Promise<string> {
+  if (isSupabaseConfigured) {
+    const supabase = supabaseBrowser();
+    const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+    const safeName = file.name.toLowerCase().replace(/[^a-z0-9.]+/g, "-");
+    const path = `menu/${Date.now()}-${safeName || `item.${ext}`}`;
+    const uploaded = await supabase?.storage.from("menu-images").upload(path, file, { upsert: true, contentType: file.type || "image/jpeg" });
+    if (!uploaded?.error) {
+      const { data } = supabase!.storage.from("menu-images").getPublicUrl(path);
+      return data.publicUrl;
+    }
+  }
+
+  return new Promise((resolve) => readImageFile(file, resolve));
+}
+
 function initialStore(): Store {
   const passId = "demo-pass-1";
   const orderId = "demo-order-1";
@@ -181,7 +208,12 @@ export function AppShell({ view }: { view: View }) {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE, JSON.stringify(store));
+    try {
+      localStorage.setItem(STORAGE, JSON.stringify(sanitizeStoreForLocalStorage(store)));
+    } catch {
+      // If old image data made localStorage too large, keep the app alive and clear the cached demo store.
+      localStorage.removeItem(STORAGE);
+    }
   }, [store]);
 
   const activeProfile = store.profiles.find((p) => p.id === activeUserId) || null;
@@ -752,7 +784,8 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
     }));
     setEditingName(draft.name);
     if (isSupabaseConfigured) {
-      await supabaseBrowser()?.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null, description: draft.description || null, active: true }, { onConflict: "name" });
+      const { error } = await supabaseBrowser()!.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null, description: draft.description || null, active: true }, { onConflict: "name" });
+      if (error) console.error("menu_items upsert failed", error.message);
     }
   }
 
@@ -813,7 +846,7 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
             <PriceInput label="Price" value={draft.price} onChange={(v)=>setDraft({...draft, price:v})} />
             <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})} placeholder="https://..."/></label>
             <label className="md:col-span-2"><span className="label">Description</span><textarea className="input min-h-[110px]" value={draft.description || ""} onChange={(e)=>setDraft({...draft, description:e.target.value})} placeholder="Short item description shown under the accordion."/></label>
-            <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={(e)=>{ const file=e.target.files?.[0]; if(file) readImageFile(file, (url)=>setDraft({...draft, image_url:url})); }}/></label>
+            <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={async (e)=>{ const file=e.target.files?.[0]; if(file) setDraft({...draft, image_url: await getMenuImageUrlFromFile(file)}); }}/></label>
             {draft.image_url && <div className="md:col-span-2 menu-image-preview"><img src={draft.image_url} alt={draft.name || "Menu item preview"}/><span>Image preview</span></div>}
           </div>
           <button className="btn-primary mt-6" onClick={saveMenuItem}>Save listing</button>
@@ -889,7 +922,8 @@ function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, 
         : [{ ...draft, price: Number(draft.price) }, ...s.menuItems]
     }));
     if (isSupabaseConfigured) {
-      await supabaseBrowser()?.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null, description: draft.description || null, active: true }, { onConflict: "name" });
+      const { error } = await supabaseBrowser()!.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null, description: draft.description || null, active: true }, { onConflict: "name" });
+      if (error) console.error("menu_items upsert failed", error.message);
     }
   }
 
@@ -913,7 +947,7 @@ function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, 
             <label><span className="label">Category</span><select className="input" value={draft.category} onChange={(e)=>setDraft({...draft, category:e.target.value})}>{["Kabob","Donair","Specials","Platters","Sides","Drinks"].map(c=><option key={c}>{c}</option>)}</select></label>
             <PriceInput label="Price" value={draft.price} onChange={(v)=>setDraft({...draft, price:v})} />
             <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})}/></label>
-            <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={(e)=>{ const file=e.target.files?.[0]; if(file) readImageFile(file, (url)=>setDraft({...draft, image_url:url})); }}/></label>
+            <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={async (e)=>{ const file=e.target.files?.[0]; if(file) setDraft({...draft, image_url: await getMenuImageUrlFromFile(file)}); }}/></label>
             {draft.image_url && <div className="md:col-span-2 menu-image-preview"><img src={draft.image_url} alt={draft.name || "Menu item preview"}/><span>Image preview</span></div>}
             <div className="md:col-span-2"><button className="btn-primary" onClick={save}>Save change</button></div>
           </div>
