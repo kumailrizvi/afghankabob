@@ -3,13 +3,13 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import { mealPlans, menuItems, getPlan } from "@/lib/plans";
+import { mealPlans as defaultMealPlans, menuItems, type MealPlan } from "@/lib/plans";
 import { memberId, qrUrl } from "@/lib/qr";
 import { isSupabaseConfigured, supabaseBrowser } from "@/lib/supabase";
 import type { MealPass, Message, Order, Profile, Redemption, Role } from "@/lib/types";
 
 type View = "meal-pass" | "rewards" | "login" | "team-login" | "account" | "staff" | "staff-menu" | "owner";
-type MenuItem = { name: string; category: string; price: number; image_url?: string };
+type MenuItem = { name: string; category: string; price: number; image_url?: string; description?: string };
 type OrderItem = MenuItem & { quantity: number };
 
 type Store = {
@@ -20,6 +20,7 @@ type Store = {
   redemptions: Redemption[];
   messages: Message[];
   menuItems: MenuItem[];
+  mealPlans: MealPlan[];
   birthdayDiscount: number;
   anniversaryDiscount: number;
   managerEditCode: string;
@@ -49,6 +50,17 @@ function formatDate(value?: string | null) {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function formatCanadianPhoneInput(value: string) {
+  const digits = value.replace(/\D/g, "").replace(/^1/, "").slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+function normalizePhoneForSave(value: string) {
+  return formatCanadianPhoneInput(value);
 }
 
 function initialStore(): Store {
@@ -87,7 +99,8 @@ function initialStore(): Store {
       { id: "msg-1", customer_id: demoCustomerId, channel: "email", message_type: "welcome", subject: "Welcome to Afghan Kabob Rewards", body: "Your rewards profile is active.", status: "sent", sent_at: nowIso(), created_at: nowIso() },
       { id: "msg-2", customer_id: demoCustomerId, channel: "email", message_type: "meal_redeemed", subject: "Your meal pass was used", body: "Afghan Chicken Kabob redeemed. 7 meals remaining.", status: "sent", sent_at: nowIso(), created_at: nowIso() }
     ],
-    menuItems: menuItems.map((item) => ({ ...item })),
+    menuItems: menuItems.map((item) => ({ description: `${item.name} served Afghan Kabob style with fresh sides and sauces.`, ...item })),
+    mealPlans: defaultMealPlans.map((plan) => ({ ...plan })),
     birthdayDiscount: 10,
     anniversaryDiscount: 10,
     managerEditCode: "4321",
@@ -118,7 +131,7 @@ export function AppShell({ view }: { view: View }) {
       const rawStore = localStorage.getItem(STORAGE);
       if (rawStore) {
         try {
-          setStore((() => { const parsed = JSON.parse(rawStore); return { ...parsed, menuItems: parsed.menuItems || menuItems.map((item) => ({ ...item })), birthdayDiscount: parsed.birthdayDiscount ?? 10, anniversaryDiscount: parsed.anniversaryDiscount ?? 10, managerEditCode: parsed.managerEditCode || "4321", auditLogs: parsed.auditLogs || [] }; })());
+          setStore((() => { const parsed = JSON.parse(rawStore); return { ...parsed, menuItems: parsed.menuItems || menuItems.map((item) => ({ description: `${item.name} served Afghan Kabob style with fresh sides and sauces.`, ...item })), mealPlans: parsed.mealPlans || defaultMealPlans.map((plan) => ({ ...plan })), birthdayDiscount: parsed.birthdayDiscount ?? 10, anniversaryDiscount: parsed.anniversaryDiscount ?? 10, managerEditCode: parsed.managerEditCode || "4321", auditLogs: parsed.auditLogs || [] }; })());
         } catch {
           localStorage.removeItem(STORAGE);
         }
@@ -182,13 +195,16 @@ export function AppShell({ view }: { view: View }) {
   async function refreshStoreFromSupabase() {
     if (!isSupabaseConfigured) return;
     const supabase = supabaseBrowser();
-    const [profiles, passes, orders, orderItems, redemptions, messages] = await Promise.all([
+    const [profiles, passes, orders, orderItems, redemptions, messages, remoteMenuItems, remoteMealPlans, auditLogs] = await Promise.all([
       supabase!.from("profiles").select("*").order("created_at", { ascending: false }),
       supabase!.from("meal_passes").select("*").order("created_at", { ascending: false }),
       supabase!.from("orders").select("*").order("created_at", { ascending: false }),
       supabase!.from("order_items").select("*"),
       supabase!.from("redemptions").select("*").order("created_at", { ascending: false }),
-      supabase!.from("messages").select("*").order("created_at", { ascending: false })
+      supabase!.from("messages").select("*").order("created_at", { ascending: false }),
+      supabase!.from("menu_items").select("*").eq("active", true).order("name", { ascending: true }),
+      supabase!.from("meal_plan_settings").select("*").order("frequency", { ascending: true }),
+      supabase!.from("audit_logs").select("*").order("created_at", { ascending: false })
     ]);
     if (profiles.error || passes.error || orders.error || orderItems.error || redemptions.error || messages.error) return;
     const groupedItems: Record<string, OrderItem[]> = {};
@@ -205,7 +221,13 @@ export function AppShell({ view }: { view: View }) {
       orderItems: groupedItems,
       redemptions: (redemptions.data || []) as Redemption[],
       messages: (messages.data || []) as Message[],
-      menuItems: current.menuItems || menuItems.map((item) => ({ ...item })),
+      menuItems: remoteMenuItems.error || !remoteMenuItems.data?.length
+        ? (current.menuItems || menuItems.map((item) => ({ description: `${item.name} served Afghan Kabob style with fresh sides and sauces.`, ...item })))
+        : remoteMenuItems.data.map((item: any) => ({ name: item.name, category: item.category, price: Number(item.price), image_url: item.image_url || "", description: item.description || `${item.name} served Afghan Kabob style with fresh sides and sauces.` })),
+      mealPlans: remoteMealPlans.error || !remoteMealPlans.data?.length
+        ? (current.mealPlans || defaultMealPlans.map((plan) => ({ ...plan })))
+        : remoteMealPlans.data.map((plan: any) => ({ id: plan.id, frequency: plan.frequency, tier: plan.tier, meals: Number(plan.meals), price: Number(plan.price), compareAt: plan.compare_at ? Number(plan.compare_at) : undefined, categories: plan.categories || [], description: plan.description || "" })),
+      auditLogs: auditLogs.error ? (current.auditLogs || []) : ((auditLogs.data || []) as Store["auditLogs"]),
       birthdayDiscount: current.birthdayDiscount ?? 10,
       anniversaryDiscount: current.anniversaryDiscount ?? 10
     }));
@@ -372,14 +394,15 @@ export function AppShell({ view }: { view: View }) {
 function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; saveProfile: (p: Profile, password: string) => Promise<Profile>; setStore: React.Dispatch<React.SetStateAction<Store>>; addMessage: (id: string, t: string, s: string, b: string) => Promise<void>; }) {
   const [frequency, setFrequency] = useState("weekly");
   const [planId, setPlanId] = useState("weekly-classic");
-  const plan = getPlan(planId);
+  const plans = store.mealPlans || defaultMealPlans;
+  const plan = plans.find((p) => p.id === planId) || plans[0] || defaultMealPlans[0];
   const eligibleItems = store.menuItems.filter((item) => plan.categories.includes(item.category));
   const [items, setItems] = useState<OrderItem[]>([]);
   const [checkout, setCheckout] = useState(false);
   const [doneCustomer, setDoneCustomer] = useState<Profile | null>(null);
 
   useEffect(() => {
-    const first = mealPlans.find((p) => p.frequency === frequency);
+    const first = plans.find((p) => p.frequency === frequency);
     if (first) setPlanId(first.id);
     setItems([]);
   }, [frequency]);
@@ -396,7 +419,7 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
 
   async function submit(form: FormData) {
     const customer: Profile = {
-      id: crypto.randomUUID(), role: "customer", full_name: String(form.get("name")), email: String(form.get("email")), phone: String(form.get("phone")), date_of_birth: String(form.get("dob") || ""), anniversary: String(form.get("anniversary") || ""), member_id: memberId(), pin_code: String(form.get("pin") || ""), created_at: nowIso()
+      id: crypto.randomUUID(), role: "customer", full_name: String(form.get("name")), email: String(form.get("email")), phone: normalizePhoneForSave(String(form.get("phone"))), date_of_birth: String(form.get("dob") || ""), anniversary: String(form.get("anniversary") || ""), member_id: memberId(), pin_code: String(form.get("pin") || ""), created_at: nowIso()
     };
     const savedCustomer = await saveProfile(customer, String(form.get("pin") || "1234"));
     const passId = crypto.randomUUID();
@@ -427,14 +450,14 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
             <div className="grid md:grid-cols-2 gap-5">
               <Field name="name" label="Full name" required />
               <Field name="email" label="Email" type="email" required />
-              <Field name="phone" label="Phone number" required />
+              <PhoneField name="phone" label="Phone number" required />
               <Field name="pin" label="Password or 4-digit PIN" required />
               <Field name="dob" label="Date of birth" type="date" />
               <Field name="anniversary" label="Anniversary" type="date" />
             </div>
             <div className="card-soft p-5">
               <div className="font-black mb-3">Checkout method</div>
-              <label className="mr-6 font-bold"><input name="payMode" type="radio" value="online" defaultChecked /> Pay online</label>
+              <label className="mr-6 font-bold"><input name="payMode" type="radio" value="online" defaultChecked /> Pay online <span className="beta-pill">Stripe beta</span></label>
               <label className="font-bold"><input name="payMode" type="radio" value="in_store" /> Pay in-store</label>
             </div>
             <label className="flex gap-3 text-sm font-bold"><input required type="checkbox" /> I agree to receive transactional messages and optional rewards messages.</label>
@@ -454,7 +477,7 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
         {["daily", "weekly", "monthly"].map((f) => <button key={f} onClick={() => setFrequency(f)} className={frequency === f ? "btn-primary" : "btn-secondary"}>{f[0].toUpperCase()+f.slice(1)}</button>)}
       </div>
       <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6 mb-10">
-        {mealPlans.filter((p) => p.frequency === frequency).map((p) => (
+        {plans.filter((p) => p.frequency === frequency).map((p) => (
           <button key={p.id} onClick={() => setPlanId(p.id)} className={`card p-7 text-left ${planId === p.id ? "ring-4 ring-[#10583f22] border-kabob-green" : ""}`}>
             <div className="text-2xl font-black">{p.tier}</div>
             <div className="text-lg font-extrabold text-kabob-green mt-2">{p.meals} meals / {p.frequency}</div>
@@ -465,7 +488,7 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
       </div>
       <div className="card p-7 mb-7"><h2 className="text-3xl font-black mb-1">Pick your meals</h2><p className="text-[#766d65] font-bold">Selected {items.reduce((a, i) => a + i.quantity, 0)} of {plan.meals}</p></div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-28">
-        {eligibleItems.map((item) => <div key={item.name} className="card p-5"><div className="h-40 rounded-3xl bg-kabob-cream grid place-items-center text-5xl">🍽️</div><h3 className="font-black text-xl mt-4 leading-6">{item.name}</h3><p className="text-sm font-bold text-[#766d65] mt-1">{item.category} • {money(item.price)}</p><button onClick={() => addItem(item)} className="btn-primary w-full mt-5">Add to order</button></div>)}
+        {eligibleItems.map((item) => <MealItemCard key={item.name} item={item} selectedQuantity={items.find((i)=>i.name===item.name)?.quantity || 0} onAdd={() => addItem(item)} />)}
       </div>
       <div className="fixed bottom-0 left-0 right-0 bg-white/95 border-t border-kabob-sand p-4"><div className="mx-auto max-w-7xl flex justify-between items-center"><div className="font-black">{items.reduce((a, i) => a + i.quantity, 0)} meals selected</div><div className="flex items-center gap-4"><div className="text-2xl font-black text-kabob-green">{money(plan.price)}</div><button disabled={items.reduce((a, i) => a + i.quantity, 0) === 0} onClick={() => setCheckout(true)} className="btn-primary disabled:opacity-50">Continue</button></div></div></div>
     </section>
@@ -475,7 +498,7 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
 function Rewards({ saveProfile, addMessage }: { saveProfile: (p: Profile, password: string) => Promise<Profile>; addMessage: (id: string, t: string, s: string, b: string) => Promise<void>; }) {
   const [created, setCreated] = useState<Profile | null>(null);
   async function submit(form: FormData) {
-    const profile: Profile = { id: crypto.randomUUID(), role: "customer", full_name: String(form.get("name")), email: String(form.get("email")), phone: String(form.get("phone")), pin_code: String(form.get("pin")), date_of_birth: String(form.get("dob")), anniversary: String(form.get("anniversary") || ""), member_id: memberId(), created_at: nowIso() };
+    const profile: Profile = { id: crypto.randomUUID(), role: "customer", full_name: String(form.get("name")), email: String(form.get("email")), phone: normalizePhoneForSave(String(form.get("phone"))), pin_code: String(form.get("pin")), date_of_birth: String(form.get("dob")), anniversary: String(form.get("anniversary") || ""), member_id: memberId(), created_at: nowIso() };
     const saved = await saveProfile(profile, String(form.get("pin") || "1234"));
     await addMessage(saved.id, "welcome", "Welcome to Afghan Kabob Rewards", `Hi ${saved.full_name}, your rewards profile is active.`);
     setCreated(saved);
@@ -488,7 +511,7 @@ function Rewards({ saveProfile, addMessage }: { saveProfile: (p: Profile, passwo
         <p className="text-[#766d65] font-semibold">Sign up for birthday, anniversary, and special offers.</p>
         <Field name="name" label="Name" required />
         <Field name="email" label="Email" type="email" required />
-        <Field name="phone" label="Phone number" required />
+        <PhoneField name="phone" label="Phone number" required />
         <Field name="pin" label="Password or 4-digit PIN" required />
         <div className="grid md:grid-cols-2 gap-4"><Field name="dob" label="Date of birth" type="date" required /><Field name="anniversary" label="Anniversary" type="date" /></div>
         <label className="flex gap-3 text-sm font-bold"><input required type="checkbox" /> I agree to receive Afghan Kabob Rewards messages. I can unsubscribe anytime.</label>
@@ -516,6 +539,7 @@ function Login({ title, role, login, activeProfile, store }: { title: string; ro
         <label className="label">Password or PIN</label>
         <input className="input mb-6" value={password} onChange={(e)=>setPassword(e.target.value)} placeholder="Enter password or PIN" type="password" />
         <button className="btn-primary w-full" onClick={async()=>{ if (await login(email,password,role)) window.location.href = "/account"; }}>Login</button>
+        <button type="button" className="btn-beta w-full mt-3" disabled>Continue with Google · Beta</button>
       </div>
     </section>
   );
@@ -690,7 +714,7 @@ function StaffMenu({ store, setStore, addAuditLog, logout }: { store: Store; set
 
 function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; addAuditLog: (a: string, e: string, n: string, b: string | null, af: string | null) => Promise<void>; logout: () => void }) {
   const [q, setQ] = useState("");
-  const [selectedTab, setSelectedTab] = useState<"customers" | "activity" | "messages" | "menu" | "offers" | "changes">("customers");
+  const [selectedTab, setSelectedTab] = useState<"customers" | "activity" | "messages" | "menu" | "passes" | "offers" | "changes">("customers");
   const [editingName, setEditingName] = useState(store.menuItems[0]?.name || "");
   const editingItem = store.menuItems.find((i) => i.name === editingName) || store.menuItems[0];
   const [draft, setDraft] = useState<MenuItem>(editingItem || { name: "", category: "Kabob", price: 0, image_url: "" });
@@ -715,7 +739,7 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
     }));
     setEditingName(draft.name);
     if (isSupabaseConfigured) {
-      await supabaseBrowser()?.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null }, { onConflict: "name" });
+      await supabaseBrowser()?.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null, description: draft.description || null, active: true }, { onConflict: "name" });
     }
   }
 
@@ -748,6 +772,7 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
           ["activity", "Activity log"],
           ["messages", "Email / SMS"],
           ["menu", "Menu listings"],
+          ["passes", "Meal pass pricing"],
           ["offers", "Offer settings"],
           ["changes", "Change log"]
         ].map(([key,label]) => <button key={key} onClick={()=>setSelectedTab(key as any)} className={selectedTab === key ? "btn-primary" : "btn-secondary"}>{label}</button>)}
@@ -774,6 +799,7 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
             <label><span className="label">Category</span><select className="input" value={draft.category} onChange={(e)=>setDraft({...draft, category:e.target.value})}>{["Kabob","Donair","Specials","Platters","Sides","Drinks"].map(c=><option key={c}>{c}</option>)}</select></label>
             <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
             <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})} placeholder="https://..."/></label>
+            <label className="md:col-span-2"><span className="label">Description</span><textarea className="input min-h-[110px]" value={draft.description || ""} onChange={(e)=>setDraft({...draft, description:e.target.value})} placeholder="Short item description shown under the accordion."/></label>
             <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={(e)=>{ const file=e.target.files?.[0]; if(file) readImageFile(file, (url)=>setDraft({...draft, image_url:url})); }}/></label>
             {draft.image_url && <div className="md:col-span-2 menu-image-preview"><img src={draft.image_url} alt={draft.name || "Menu item preview"}/><span>Image preview</span></div>}
           </div>
@@ -782,6 +808,8 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
         </div>
       </div>}
 
+      {selectedTab === "passes" && <MealPlanEditor store={store} setStore={setStore} addAuditLog={addAuditLog} />}
+
       {selectedTab === "offers" && <div className="card p-6 md:p-8 max-w-[760px]"><h2 className="text-3xl font-black mb-5">Offer settings</h2><div className="grid md:grid-cols-2 gap-5"><label><span className="label">Birthday discount %</span><input className="input" type="number" value={store.birthdayDiscount} onChange={(e)=>updateOffer("birthdayDiscount", e.target.value)}/></label><label><span className="label">Anniversary discount %</span><input className="input" type="number" value={store.anniversaryDiscount} onChange={(e)=>updateOffer("anniversaryDiscount", e.target.value)}/></label></div><p className="text-sm text-[#74675d] font-semibold mt-4">These settings control the birthday and anniversary offers shown in the owner messaging workflow.</p></div>}
 
       {selectedTab === "changes" && <History title="Change log" headers={["Date","Changed by","Action","Entity","Before","After"]} rows={(store.auditLogs || []).map((l)=>[new Date(l.created_at).toLocaleString(), l.actor_name, l.action, `${l.entity_type}: ${l.entity_name}`, l.before_value || "—", l.after_value || "—"])}/>}
@@ -789,6 +817,26 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
   );
 }
 
+
+function MealItemCard({ item, onAdd, selectedQuantity = 0 }: { item: MenuItem; onAdd: () => void; selectedQuantity?: number }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`card p-5 meal-card ${selectedQuantity ? "meal-card-selected" : ""}`}>
+      <div className="meal-card-image">
+        {item.image_url ? <img src={item.image_url} alt={item.name} /> : <span>🍽️</span>}
+      </div>
+      <div className="flex items-start justify-between gap-3 mt-4">
+        <div>
+          <h3 className="font-black text-xl leading-6">{item.name}</h3>
+          <p className="text-sm font-bold text-[#766d65] mt-1">{item.category} • {money(item.price)}</p>
+        </div>
+        <button type="button" className="accordion-arrow" aria-label="Show description" onClick={() => setOpen(!open)}>{open ? "⌃" : "⌄"}</button>
+      </div>
+      {open && <p className="meal-description">{item.description || "Freshly prepared Afghan Kabob menu item."}</p>}
+      <button onClick={onAdd} className="btn-primary w-full mt-5">{selectedQuantity ? `Selected x${selectedQuantity}` : "Add to order"}</button>
+    </div>
+  );
+}
 
 function SelectedMealsPanel({ items }: { items: OrderItem[] }) {
   return (
@@ -828,7 +876,7 @@ function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, 
         : [{ ...draft, price: Number(draft.price) }, ...s.menuItems]
     }));
     if (isSupabaseConfigured) {
-      await supabaseBrowser()?.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null }, { onConflict: "name" });
+      await supabaseBrowser()?.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null, description: draft.description || null, active: true }, { onConflict: "name" });
     }
   }
 
@@ -855,6 +903,9 @@ function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, 
             <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={(e)=>{ const file=e.target.files?.[0]; if(file) readImageFile(file, (url)=>setDraft({...draft, image_url:url})); }}/></label>
             {draft.image_url && <div className="md:col-span-2 menu-image-preview"><img src={draft.image_url} alt={draft.name || "Menu item preview"}/><span>Image preview</span></div>}
             <div className="md:col-span-2"><button className="btn-primary" onClick={save}>Save change</button></div>
+          </div>
+          <div className="lg:col-span-2 mt-6">
+            <MealPlanEditor store={store} setStore={setStore} addAuditLog={addAuditLog} staffMode />
           </div>
         </div>
       )}
@@ -896,8 +947,59 @@ function QrPanel({ customer, size }: { customer: Profile; size: number }) {
   return <div className="card-soft p-5 text-center"><Image alt="Member QR" src={qrUrl(customer.member_id || customer.id)} width={size} height={size} className="mx-auto" /><div className="text-xl font-black mt-4">{customer.member_id}</div></div>;
 }
 
+function PhoneField({ name, label, required=false }: { name: string; label: string; required?: boolean }) {
+  const [value, setValue] = useState("");
+  return <label><span className="label">{label}{required ? " *" : ""}</span><input className="input" name={name} type="tel" inputMode="tel" placeholder="(306) 555-7788" value={value} onChange={(e)=>setValue(formatCanadianPhoneInput(e.target.value))} required={required}/></label>;
+}
+
+function MealPlanEditor({ store, setStore, addAuditLog, staffMode=false }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; addAuditLog: (a: string, e: string, n: string, b: string | null, af: string | null) => Promise<void>; staffMode?: boolean }) {
+  const [selectedId, setSelectedId] = useState(store.mealPlans[0]?.id || "");
+  const selected = store.mealPlans.find((p)=>p.id===selectedId) || store.mealPlans[0];
+  const [draft, setDraft] = useState<MealPlan>(selected || defaultMealPlans[0]);
+
+  useEffect(() => {
+    const next = store.mealPlans.find((p)=>p.id===selectedId) || store.mealPlans[0];
+    if (next) setDraft({ ...next, categories: [...next.categories] });
+  }, [selectedId, store.mealPlans]);
+
+  async function savePlan() {
+    if (!draft.id.trim() || !draft.tier.trim()) return;
+    const before = store.mealPlans.find((p)=>p.id===selectedId);
+    const clean = { ...draft, meals: Number(draft.meals), price: Number(draft.price), compareAt: draft.compareAt ? Number(draft.compareAt) : undefined, categories: draft.categories.filter(Boolean) };
+    await addAuditLog(staffMode ? "staff_updated_meal_pass" : "updated_meal_pass", "meal_plan", clean.tier, before ? JSON.stringify(before) : null, JSON.stringify(clean));
+    setStore((s)=>({ ...s, mealPlans: s.mealPlans.some((p)=>p.id===selectedId) ? s.mealPlans.map((p)=>p.id===selectedId ? clean : p) : [clean, ...s.mealPlans] }));
+    setSelectedId(clean.id);
+    if (isSupabaseConfigured) {
+      await supabaseBrowser()?.from("meal_plan_settings").upsert({ id: clean.id, frequency: clean.frequency, tier: clean.tier, meals: clean.meals, price: clean.price, compare_at: clean.compareAt || null, categories: clean.categories, description: clean.description, active: true }, { onConflict: "id" });
+    }
+  }
+
+  return <div className="card p-6 md:p-8">
+    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-5">
+      <div><h2 className="text-3xl font-black">Meal pass pricing</h2><p className="text-[#74675d] font-semibold mt-1">Change daily, weekly, and monthly pass prices, meal counts, and eligible categories.</p></div>
+      <button className="btn-secondary" onClick={()=>{ const id=`custom-${Date.now()}`; setSelectedId(id); setDraft({ id, frequency: "weekly", tier: "New Pass", meals: 1, price: 0, compareAt: undefined, categories: ["Kabob"], description: "" }); }}>Add pass</button>
+    </div>
+    <div className="grid lg:grid-cols-[330px_1fr] gap-6">
+      <div className="space-y-2 max-h-[420px] overflow-auto">
+        {store.mealPlans.map((p)=><button key={p.id} className={`w-full text-left border rounded-2xl p-3 ${selectedId === p.id ? "border-kabob-green bg-kabob-cream" : "border-kabob-sand"}`} onClick={()=>setSelectedId(p.id)}><div className="font-black">{p.tier}</div><div className="text-sm text-[#74675d]">{p.frequency} • {p.meals} meals • {money(p.price)}</div></button>)}
+      </div>
+      <div className="grid md:grid-cols-2 gap-5">
+        <label><span className="label">Plan ID</span><input className="input" value={draft.id} onChange={(e)=>setDraft({...draft, id:e.target.value.toLowerCase().replace(/[^a-z0-9-]/g,"-")})}/></label>
+        <label><span className="label">Frequency</span><select className="input" value={draft.frequency} onChange={(e)=>setDraft({...draft, frequency:e.target.value as MealPlan["frequency"]})}>{["daily","weekly","monthly"].map(f=><option key={f}>{f}</option>)}</select></label>
+        <label><span className="label">Tier name</span><input className="input" value={draft.tier} onChange={(e)=>setDraft({...draft, tier:e.target.value})}/></label>
+        <label><span className="label">Meals included</span><input className="input" type="number" value={draft.meals} onChange={(e)=>setDraft({...draft, meals:Number(e.target.value)})}/></label>
+        <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
+        <label><span className="label">Compare-at price</span><input className="input" type="number" step="0.01" value={draft.compareAt || ""} onChange={(e)=>setDraft({...draft, compareAt:e.target.value ? Number(e.target.value) : undefined})}/></label>
+        <label className="md:col-span-2"><span className="label">Eligible categories</span><input className="input" value={draft.categories.join(", ")} onChange={(e)=>setDraft({...draft, categories:e.target.value.split(",").map(x=>x.trim()).filter(Boolean)})} placeholder="Kabob, Donair, Specials"/></label>
+        <label className="md:col-span-2"><span className="label">Description</span><textarea className="input min-h-[100px]" value={draft.description} onChange={(e)=>setDraft({...draft, description:e.target.value})}/></label>
+        <div className="md:col-span-2"><button className="btn-primary" onClick={savePlan}>Save meal pass</button></div>
+      </div>
+    </div>
+  </div>;
+}
+
 function Field({ name, label, type="text", required=false }: { name: string; label: string; type?: string; required?: boolean }) { return <label><span className="label">{label}{required ? " *" : ""}</span><input className="input" name={name} type={type} required={required}/></label>; }
 function Metric({ label, value }: { label: string; value: string }) { return <div className="metric-card"><div className="metric-label">{label}</div><div className="metric-value">{value}</div></div>; }
 function StepBar({ step }: { step: number }) { return <div className="flex items-center justify-center gap-3 mb-12 text-sm"><span className={step>=1?"step-pill step-active":"step-pill"}>1 Select a plan</span><span className="step-line"/><span className={step>=2?"step-pill step-active":"step-pill"}>2 Pick your meals</span><span className="step-line"/><span className={step>=3?"step-pill step-active":"step-pill"}>3 Submit order</span></div>; }
-function OrderSummary({ plan, items }: { plan: ReturnType<typeof getPlan>; items: OrderItem[] }) { const tax=+(plan.price*.11).toFixed(2); return <aside className="card p-6 h-fit sticky top-5"><h2 className="text-2xl font-black">Your Order</h2><div className="mt-4 space-y-3">{items.map((i)=><div key={i.name} className="flex justify-between gap-4 font-bold"><span>{i.quantity}x {i.name}</span><span>{money(i.price*i.quantity)}</span></div>)}</div><div className="border-t border-kabob-sand mt-5 pt-5 space-y-2 font-bold"><div className="flex justify-between"><span>{plan.meals} meals/{plan.frequency}</span><span>{money(plan.price)}</span></div><div className="flex justify-between"><span>Tax estimate</span><span>{money(tax)}</span></div><div className="flex justify-between text-xl font-black text-kabob-green"><span>Total</span><span>{money(plan.price+tax)}</span></div></div></aside>; }
+function OrderSummary({ plan, items }: { plan: MealPlan; items: OrderItem[] }) { const tax=+(plan.price*.11).toFixed(2); return <aside className="card p-6 h-fit sticky top-5"><h2 className="text-2xl font-black">Your Order</h2><div className="mt-4 space-y-3">{items.map((i)=><div key={i.name} className="flex justify-between gap-4 font-bold"><span>{i.quantity}x {i.name}</span><span>{money(i.price*i.quantity)}</span></div>)}</div><div className="border-t border-kabob-sand mt-5 pt-5 space-y-2 font-bold"><div className="flex justify-between"><span>{plan.meals} meals/{plan.frequency}</span><span>{money(plan.price)}</span></div><div className="flex justify-between"><span>Tax estimate</span><span>{money(tax)}</span></div><div className="flex justify-between text-xl font-black text-kabob-green"><span>Total</span><span>{money(plan.price+tax)}</span></div></div></aside>; }
 function History({ title, headers, rows }: { title: string; headers: string[]; rows: string[][] }) { return <div className="card p-6"><h2 className="text-2xl font-black mb-4">{title}</h2><div className="table-wrap"><table><thead><tr>{headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{rows.length ? rows.map((r,idx)=><tr key={idx}>{r.map((c,i)=><td key={i}>{c}</td>)}</tr>) : <tr><td colSpan={headers.length}>No records yet.</td></tr>}</tbody></table></div></div>; }

@@ -277,3 +277,78 @@ tr:hover td { background: #fff8ef; }
   border-radius: 16px;
   background: #efe8df;
 }
+
+/* v9: selected meal cards, accordion arrows, beta states */
+.meal-card {
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease, background .15s ease;
+  border-width: 2px;
+}
+.meal-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(15,81,56,.35);
+}
+.meal-card-selected {
+  border-color: var(--green) !important;
+  background: #fffaf2;
+  box-shadow: 0 0 0 4px rgba(15,81,56,.10), 0 18px 55px rgba(33,24,19,.10);
+}
+.meal-card-image {
+  height: 160px;
+  border-radius: 22px;
+  background: #f2ece4;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #9a9188;
+  font-size: 42px;
+}
+.meal-card-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.accordion-arrow {
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  border: 1px solid var(--sand);
+  background: #fffaf5;
+  color: var(--green);
+  font-weight: 900;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.meal-description {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1.55;
+}
+.beta-pill {
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #eee8de;
+  color: #7a7067;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.btn-beta {
+  background: #eee8de;
+  color: #776d64;
+  border: 1px dashed #cbb8a2;
+  border-radius: 999px;
+  padding: 13px 22px;
+  font-weight: 900;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: not-allowed;
+}

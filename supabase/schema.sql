@@ -83,6 +83,7 @@ create table if not exists menu_items (
   category text not null,
   price numeric not null,
   image_url text,
+  description text,
   active boolean not null default true,
   updated_at timestamp with time zone default now()
 );
@@ -157,3 +158,39 @@ for select to authenticated using (true);
 drop policy if exists "audit_logs_insert_authenticated" on public.audit_logs;
 create policy "audit_logs_insert_authenticated" on public.audit_logs
 for insert to authenticated with check (true);
+
+
+-- v9: menu descriptions and editable meal pass plan settings.
+alter table public.menu_items add column if not exists description text;
+
+create table if not exists meal_plan_settings (
+  id text primary key,
+  frequency text not null check (frequency in ('daily', 'weekly', 'monthly')),
+  tier text not null,
+  meals int not null,
+  price numeric not null,
+  compare_at numeric,
+  categories text[] not null default '{}',
+  description text,
+  active boolean not null default true,
+  updated_at timestamp with time zone default now()
+);
+
+insert into meal_plan_settings (id, frequency, tier, meals, price, compare_at, categories, description)
+values
+('daily-donair','daily','Daily Donair',1,14.99,17,array['Donair','Specials'],'One meal for today. Good for walk-ins and lunch.'),
+('weekly-value','weekly','Weekly Value',3,39.99,48,array['Donair','Kabob'],'Three meals per week for regular lunch customers.'),
+('weekly-classic','weekly','Weekly Classic',5,69.99,85,array['Donair','Kabob','Specials'],'Five meals per week with kabob and specials included.'),
+('monthly-classic','monthly','Monthly Classic',8,109.99,136,array['Donair','Kabob','Specials'],'Eight meals per month for regular customers.'),
+('monthly-family','monthly','Monthly Family',12,159.99,204,array['Kabob','Platters','Specials'],'Family style monthly pass with platter eligibility.')
+on conflict (id) do nothing;
+
+alter table public.meal_plan_settings enable row level security;
+
+drop policy if exists "meal_plan_settings_read_authenticated" on public.meal_plan_settings;
+create policy "meal_plan_settings_read_authenticated" on public.meal_plan_settings
+for select to authenticated using (true);
+
+drop policy if exists "meal_plan_settings_write_authenticated" on public.meal_plan_settings;
+create policy "meal_plan_settings_write_authenticated" on public.meal_plan_settings
+for all to authenticated using (true) with check (true);
