@@ -342,13 +342,35 @@ export function AppShell({ view }: { view: View }) {
 
   async function saveProfile(profile: Profile, password: string) {
     let savedProfile = profile;
+
     if (isSupabaseConfigured) {
-      const supabase = supabaseBrowser();
-      const auth = await supabase?.auth.signUp({ email: profile.email, password });
-      if (auth?.data.user?.id) savedProfile = { ...profile, id: auth.data.user.id };
-      await supabase?.from("profiles").upsert(savedProfile);
+      const response = await fetch("/api/rewards/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          full_name: profile.full_name,
+          email: profile.email,
+          phone: profile.phone,
+          pin_code: password,
+          date_of_birth: profile.date_of_birth,
+          anniversary: profile.anniversary,
+          member_id: profile.member_id
+        })
+      });
+
+      const result = await response.json();
+      if (!response.ok || !result.ok || !result.profile) {
+        throw new Error(result.error || "Rewards signup could not be saved.");
+      }
+
+      savedProfile = result.profile as Profile;
+
+      if (result.message) {
+        setStore((s) => ({ ...s, messages: [result.message, ...s.messages.filter((m) => m.id !== result.message.id)] }));
+      }
     }
-    setStore((s) => ({ ...s, profiles: [savedProfile, ...s.profiles.filter((p) => p.id !== savedProfile.id)], passwords: { ...s.passwords, [savedProfile.email.toLowerCase()]: password } }));
+
+    setStore((s) => ({ ...s, profiles: [savedProfile, ...s.profiles.filter((p) => p.id !== savedProfile.id)], passwords: { ...s.passwords, [String(savedProfile.email).toLowerCase()]: password } }));
     persistSession(savedProfile);
     return savedProfile;
   }
@@ -529,17 +551,24 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
 
 function Rewards({ saveProfile, addMessage }: { saveProfile: (p: Profile, password: string) => Promise<Profile>; addMessage: (id: string, t: string, s: string, b: string) => Promise<void>; }) {
   const [created, setCreated] = useState<Profile | null>(null);
+  const [error, setError] = useState("");
   async function submit(form: FormData) {
-    const profile: Profile = { id: crypto.randomUUID(), role: "customer", full_name: String(form.get("name")), email: String(form.get("email")), phone: normalizePhoneForSave(String(form.get("phone"))), pin_code: String(form.get("pin")), date_of_birth: String(form.get("dob")), anniversary: String(form.get("anniversary") || ""), member_id: memberId(), created_at: nowIso() };
-    const saved = await saveProfile(profile, String(form.get("pin") || "1234"));
-    await addMessage(saved.id, "welcome", "Welcome to Afghan Kabob Rewards", `Hi ${saved.full_name}, your rewards profile is active.`);
-    setCreated(saved);
+    setError("");
+    try {
+      const profile: Profile = { id: crypto.randomUUID(), role: "customer", full_name: String(form.get("name")), email: String(form.get("email")), phone: normalizePhoneForSave(String(form.get("phone"))), pin_code: String(form.get("pin")), date_of_birth: String(form.get("dob")), anniversary: String(form.get("anniversary") || ""), member_id: memberId(), created_at: nowIso() };
+      const saved = await saveProfile(profile, String(form.get("pin") || "1234"));
+      if (!isSupabaseConfigured) await addMessage(saved.id, "welcome", "Welcome to Afghan Kabob Rewards", `Hi ${saved.full_name}, your rewards profile is active.`);
+      setCreated(saved);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Rewards signup failed. Please try again.");
+    }
   }
   if (created) return <div className="grid lg:grid-cols-2 gap-8 items-start"><div className="card p-8"><h1 className="text-4xl font-black">Rewards profile created</h1><p className="mt-3 text-[#766d65] font-semibold">Use this member ID in-store, or log in later with email and PIN.</p><div className="mt-6 text-3xl font-black text-kabob-green">{created.member_id}</div></div><div className="card p-8 text-center"><Image alt="Rewards QR" src={qrUrl(`${process.env.NEXT_PUBLIC_APP_URL || "https://afghankabob.ca"}/account?member=${created.member_id}`)} width={260} height={260} className="mx-auto" /><div className="font-black mt-4">{created.member_id}</div></div></div>;
   return (
     <section className="grid lg:grid-cols-[1fr_420px] gap-8 items-start">
       <form action={submit} className="card p-8 md:p-10 space-y-5">
         <h1 className="text-5xl font-black">Join Rewards</h1>
+        {error && <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
         <p className="text-[#766d65] font-semibold">Sign up for birthday, anniversary, and special offers.</p>
         <Field name="name" label="Name" required />
         <Field name="email" label="Email" type="email" required />
