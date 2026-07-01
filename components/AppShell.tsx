@@ -638,9 +638,16 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
   const customerOrders = store.orders.filter((o) => o.customer_id === selected?.id).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const latestOrder = customerOrders[0];
   const selectedMealItems = latestOrder ? (store.orderItems[latestOrder.id] || []) : [];
-  const selectedMealOptions = selectedMealItems.length
-    ? selectedMealItems.flatMap((i) => Array.from({ length: i.quantity || 1 }, () => ({ name: i.name, category: i.category, price: i.price })))
+  const passRedemptions = store.redemptions.filter((r) => r.customer_id === selected?.id && (!pass?.id || r.meal_pass_id === pass.id));
+  const selectedMealStatus = selectedMealItems.map((i) => {
+    const redeemed = passRedemptions.filter((r) => r.item_name === i.name).length;
+    const total = i.quantity || 1;
+    return { ...i, total, redeemed, remaining: Math.max(total - redeemed, 0) };
+  });
+  const selectedMealOptions = selectedMealStatus.length
+    ? selectedMealStatus.flatMap((i) => Array.from({ length: i.remaining }, () => ({ name: i.name, category: i.category, price: i.price, remaining: i.remaining, total: i.total })))
     : [];
+  const pendingInStoreOrders = customerOrders.filter((o) => o.order_type === "in_store" && !["paid", "paid_in_store"].includes(o.payment_status));
   const [itemName, setItemName] = useState(selectedMealOptions[0]?.name || "");
   const [editUnlocked, setEditUnlocked] = useState(false);
   const [editCode, setEditCode] = useState("");
@@ -718,7 +725,20 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
               <CustomerDetails customer={selected} pass={pass} />
               <div>
                 <h3 className="text-2xl font-black mb-3">Redeem meal</h3>
-                <select className="input mb-4" value={itemName} onChange={(e)=>setItemName(e.target.value)} disabled={!selectedMealOptions.length}>{selectedMealOptions.length ? selectedMealOptions.map((i, idx)=><option key={`${i.name}-${idx}`} value={i.name}>{i.name} — selected in order — {money(i.price)}</option>) : <option>No selected meals on this customer pass</option>}</select>
+                {pendingInStoreOrders.length > 0 && (
+                  <div className="card-soft p-4 mb-4">
+                    <div className="font-black text-kabob-green mb-2">In-store payment pending</div>
+                    <div className="space-y-2">
+                      {pendingInStoreOrders.map((order) => (
+                        <label key={order.id} className="flex items-center gap-3 font-bold">
+                          <input type="checkbox" onChange={() => markInStorePaid(order)} />
+                          <span>Mark paid in store · {money(order.total)} · submitted {new Date(order.created_at).toLocaleString()}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <select className="input mb-4" value={itemName} onChange={(e)=>setItemName(e.target.value)} disabled={!selectedMealOptions.length}>{selectedMealOptions.length ? selectedMealOptions.map((i, idx)=><option key={`${i.name}-${idx}`} value={i.name}>{i.name} — {i.remaining} of {i.total} left — {money(i.price)}</option>) : <option>No selected meals remaining on this customer pass</option>}</select>
                 <div className="flex flex-wrap gap-3">
                   <button className="btn-primary" onClick={redeem}>Redeem selected meal</button>
                   <button className="btn-secondary" onClick={()=>addMessage(selected.id,"balance","Your Afghan Kabob balance",`You have ${pass ? pass.meals_included-pass.meals_used : 0} meals remaining.`)}>Send balance</button>
@@ -728,7 +748,7 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
             <QrPanel customer={selected} size={230} />
           </div>
           <InStorePaymentPanel orders={customerOrders} onMarkPaid={markInStorePaid} />
-          <SelectedMealsPanel items={selectedMealItems} />
+          <SelectedMealsPanel items={selectedMealStatus} />
           <CustomerTables customer={selected} store={store}/>
         </div>}
       </div>
@@ -884,18 +904,29 @@ function MealItemCard({ item, onAdd, selectedQuantity = 0 }: { item: MenuItem; o
   );
 }
 
-function SelectedMealsPanel({ items }: { items: OrderItem[] }) {
+function SelectedMealsPanel({ items }: { items: (OrderItem & { total?: number; redeemed?: number; remaining?: number })[] }) {
   return (
     <div className="card p-6">
       <h2 className="text-2xl font-black mb-4">Meals selected in this pass</h2>
       {items.length ? (
         <div className="grid md:grid-cols-2 gap-3">
-          {items.map((item) => (
-            <div key={`${item.name}-${item.quantity}`} className="card-soft p-4 flex justify-between gap-4">
-              <div><div className="font-black">{item.name}</div><div className="text-sm font-bold text-[#74675d]">{item.category}</div></div>
-              <div className="font-black text-kabob-green">x{item.quantity}</div>
-            </div>
-          ))}
+          {items.map((item) => {
+            const total = item.total ?? item.quantity ?? 1;
+            const redeemed = item.redeemed ?? 0;
+            const remaining = item.remaining ?? Math.max(total - redeemed, 0);
+            return (
+              <div key={`${item.name}-${total}`} className="card-soft p-4 flex justify-between gap-4 items-center">
+                <div>
+                  <div className="font-black">{item.name}</div>
+                  <div className="text-sm font-bold text-[#74675d]">{item.category}</div>
+                </div>
+                <div className="text-right">
+                  <div className="font-black text-kabob-green">{remaining}/{total} left</div>
+                  <div className="text-xs font-black uppercase tracking-wider text-[#74675d]">{redeemed} used</div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       ) : <p className="text-[#74675d] font-semibold">No selected meals found for this customer. Create or renew a meal pass first.</p>}
     </div>
