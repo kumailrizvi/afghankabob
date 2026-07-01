@@ -9,7 +9,8 @@ import { isSupabaseConfigured, supabaseBrowser } from "@/lib/supabase";
 import type { MealPass, Message, Order, Profile, Redemption, Role } from "@/lib/types";
 
 type View = "meal-pass" | "rewards" | "login" | "team-login" | "account" | "staff" | "owner";
-type OrderItem = { name: string; category: string; price: number; quantity: number };
+type MenuItem = { name: string; category: string; price: number; image_url?: string };
+type OrderItem = MenuItem & { quantity: number };
 
 type Store = {
   profiles: Profile[];
@@ -18,6 +19,9 @@ type Store = {
   orderItems: Record<string, OrderItem[]>;
   redemptions: Redemption[];
   messages: Message[];
+  menuItems: MenuItem[];
+  birthdayDiscount: number;
+  anniversaryDiscount: number;
   passwords: Record<string, string>;
 };
 
@@ -74,7 +78,10 @@ function initialStore(): Store {
     messages: [
       { id: "msg-1", customer_id: demoCustomerId, channel: "email", message_type: "welcome", subject: "Welcome to Afghan Kabob Rewards", body: "Your rewards profile is active.", status: "sent", sent_at: nowIso(), created_at: nowIso() },
       { id: "msg-2", customer_id: demoCustomerId, channel: "email", message_type: "meal_redeemed", subject: "Your meal pass was used", body: "Afghan Chicken Kabob redeemed. 7 meals remaining.", status: "sent", sent_at: nowIso(), created_at: nowIso() }
-    ]
+    ],
+    menuItems: menuItems.map((item) => ({ ...item })),
+    birthdayDiscount: 10,
+    anniversaryDiscount: 10
   };
 }
 
@@ -101,7 +108,7 @@ export function AppShell({ view }: { view: View }) {
       const rawStore = localStorage.getItem(STORAGE);
       if (rawStore) {
         try {
-          setStore(JSON.parse(rawStore));
+          setStore((() => { const parsed = JSON.parse(rawStore); return { ...parsed, menuItems: parsed.menuItems || menuItems.map((item) => ({ ...item })), birthdayDiscount: parsed.birthdayDiscount ?? 10, anniversaryDiscount: parsed.anniversaryDiscount ?? 10 }; })());
         } catch {
           localStorage.removeItem(STORAGE);
         }
@@ -187,7 +194,10 @@ export function AppShell({ view }: { view: View }) {
       orders: (orders.data || []).map((o: any) => ({ ...o, subtotal: Number(o.subtotal), tax: Number(o.tax), total: Number(o.total) })) as Order[],
       orderItems: groupedItems,
       redemptions: (redemptions.data || []) as Redemption[],
-      messages: (messages.data || []) as Message[]
+      messages: (messages.data || []) as Message[],
+      menuItems: current.menuItems || menuItems.map((item) => ({ ...item })),
+      birthdayDiscount: current.birthdayDiscount ?? 10,
+      anniversaryDiscount: current.anniversaryDiscount ?? 10
     }));
   }
 
@@ -331,7 +341,7 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
   const [frequency, setFrequency] = useState("weekly");
   const [planId, setPlanId] = useState("weekly-classic");
   const plan = getPlan(planId);
-  const eligibleItems = menuItems.filter((item) => plan.categories.includes(item.category));
+  const eligibleItems = store.menuItems.filter((item) => plan.categories.includes(item.category));
   const [items, setItems] = useState<OrderItem[]>([]);
   const [checkout, setCheckout] = useState(false);
   const [doneCustomer, setDoneCustomer] = useState<Profile | null>(null);
@@ -342,7 +352,7 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
     setItems([]);
   }, [frequency]);
 
-  function addItem(item: typeof menuItems[number]) {
+  function addItem(item: MenuItem) {
     const total = items.reduce((a, i) => a + i.quantity, 0);
     if (total >= plan.meals) return;
     setItems((prev) => {
@@ -480,10 +490,15 @@ function Login({ title, role, login, activeProfile, store }: { title: string; ro
 }
 
 function TeamLogin({ login, activeRole }: { login: (e: string, p: string, r?: Role) => Promise<boolean>; activeRole: Role | null }) {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  if (activeRole === "staff") return <div className="card p-8 md:p-10 text-center max-w-[560px]"><h1 className="text-4xl font-black">Staff access</h1><a className="btn-primary mt-6" href="/staff">Open check-in</a></div>;
-  if (activeRole === "owner") return <div className="card p-8 md:p-10 text-center max-w-[560px]"><h1 className="text-4xl font-black">Owner access</h1><a className="btn-primary mt-6" href="/owner">Open dashboard</a></div>;
+
+  useEffect(() => {
+    if (activeRole === "staff") router.replace("/staff");
+    if (activeRole === "owner") router.replace("/owner");
+  }, [activeRole, router]);
+
   return (
     <section className="w-full max-w-[560px]">
       <div className="card p-8 md:p-10">
@@ -514,30 +529,14 @@ function PassCard({ customer, store }: { customer: Profile; store: Store }) {
   const messages = store.messages.filter((m) => m.customer_id === customer.id);
   return (
     <section className="space-y-8">
-      <div className="card p-8 md:p-10 grid lg:grid-cols-[1fr_320px] gap-10 items-start">
-        <div>
-          <h1 className="text-5xl font-black leading-tight">{customer.full_name}</h1>
-          <p className="text-xl font-black mt-3 text-kabob-green">{customer.member_id}</p>
-          <p className="font-bold text-[#74675d] mt-1">{customer.phone} • {customer.email}</p>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-8">
-            <Metric label="Date of birth" value={formatDate(customer.date_of_birth)} />
-            <Metric label="Anniversary" value={formatDate(customer.anniversary)} />
-            <Metric label="Tier" value={pass?.tier || "Rewards only"} />
-            <Metric label="Meals left" value={pass ? `${pass.meals_included - pass.meals_used}/${pass.meals_included}` : "—"} />
-          </div>
-          <div className="grid sm:grid-cols-2 gap-4 mt-4">
-            <Metric label="Frequency" value={pass?.frequency || "—"} />
-            <Metric label="Renewal" value={formatDate(pass?.renewal_date)} />
-          </div>
+      <div className="card p-7 md:p-10 grid lg:grid-cols-[1fr_300px] gap-8 items-start">
+        <div className="space-y-7">
+          <CustomerSummary customer={customer} pass={pass} />
+          <CustomerDetails customer={customer} pass={pass} />
         </div>
-        <div className="card-soft p-6 text-center">
-          <Image alt="Member QR" src={qrUrl(customer.member_id || customer.id)} width={260} height={260} className="mx-auto" />
-          <div className="text-2xl font-black mt-4">{customer.member_id}</div>
-        </div>
+        <QrPanel customer={customer} size={260} />
       </div>
-      <History title="Previous orders" rows={orders.map((o)=>[new Date(o.created_at).toLocaleString(), o.order_type, money(o.total), o.payment_status])} headers={["Date","Type","Total","Status"]}/>
-      <History title="Redemption activity" rows={reds.map((r)=>[new Date(r.created_at).toLocaleString(), r.item_name, String(r.meals_remaining ?? "")])} headers={["Date","Item","Remaining"]}/>
-      <History title="Messages sent" rows={messages.map((m)=>[new Date(m.created_at).toLocaleString(), m.message_type, m.channel, m.status])} headers={["Date","Type","Channel","Status"]}/>
+      <CustomerTables customer={customer} store={store}/>
     </section>
   );
 }
@@ -549,15 +548,22 @@ function Staff({ store, setStore, addMessage, logout }: { store: Store; setStore
   const selected = customers.find((c) => c.id === selectedId) || customers[0];
   const pass = store.passes.find((p) => p.customer_id === selected?.id);
   const plan = mealPlans.find((p) => p.tier === pass?.tier) || mealPlans[2];
-  const eligible = menuItems.filter((i) => plan.categories.includes(i.category));
+  const eligible = store.menuItems.filter((i) => plan.categories.includes(i.category));
   const [itemName, setItemName] = useState(eligible[0]?.name || "");
+
+  useEffect(() => {
+    if (eligible.length && !eligible.some((i) => i.name === itemName)) setItemName(eligible[0].name);
+  }, [eligible, itemName]);
+
   const filtered = customers.filter((c) => [c.full_name, c.email, c.phone, c.member_id].join(" ").toLowerCase().includes(query.toLowerCase()));
+
   async function redeem() {
     if (!selected || !pass) return;
     if (pass.meals_used >= pass.meals_included) return alert("No meals left.");
-    const item = menuItems.find((i) => i.name === itemName) || eligible[0];
+    const item = store.menuItems.find((i) => i.name === itemName) || eligible[0];
+    if (!item) return;
     const remaining = pass.meals_included - pass.meals_used - 1;
-    const red: Redemption = { id: crypto.randomUUID(), customer_id: selected.id, meal_pass_id: pass.id, staff_id: demoStaffId, item_name: item.name, category: item.category, meals_remaining: remaining, created_at: nowIso() };
+    const red: Redemption = { id: crypto.randomUUID(), customer_id: selected.id, meal_pass_id: pass.id, staff_id: activeUserIdForRedemption(), item_name: item.name, category: item.category, meals_remaining: remaining, created_at: nowIso() };
     setStore((s) => ({ ...s, passes: s.passes.map((p) => p.id === pass.id ? { ...p, meals_used: p.meals_used + 1 } : p), redemptions: [red, ...s.redemptions] }));
     if (isSupabaseConfigured) {
       const supabase = supabaseBrowser();
@@ -566,15 +572,149 @@ function Staff({ store, setStore, addMessage, logout }: { store: Store; setStore
     }
     await addMessage(selected.id, "meal_redeemed", "Your meal pass was used", `${item.name} redeemed. ${remaining} meals remaining.`);
   }
-  return <section><div className="flex justify-between items-center mb-8"><h1 className="text-5xl font-black">Staff check-in</h1><button onClick={logout} className="btn-secondary">Logout</button></div><div className="grid lg:grid-cols-[340px_1fr] gap-8"><div className="card p-5"><h2 className="text-2xl font-black mb-4">Search / scan</h2><input className="input mb-4" placeholder="Name, phone, email, member ID" value={query} onChange={(e)=>setQuery(e.target.value)} /><button className="btn-primary w-full mb-5" onClick={()=>setQuery("AKR-AA4QN")}>Scan QR</button><div className="space-y-3 max-h-[600px] overflow-auto">{filtered.map((c)=>{const p=store.passes.find(x=>x.customer_id===c.id);return <button key={c.id} onClick={()=>setSelectedId(c.id)} className="w-full text-left border border-kabob-sand rounded-2xl p-3 hover:bg-kabob-cream"><div className="font-black">{c.full_name}</div><div className="text-sm text-[#766d65]">{c.member_id} • {c.phone}</div><div className="font-black text-kabob-green">{p ? `${p.meals_included-p.meals_used}/${p.meals_included} meals left` : "Rewards only"}</div></button>})}</div></div>{selected && <div className="space-y-6"><div className="card p-8 grid lg:grid-cols-[1fr_260px] gap-8"><div><h2 className="text-3xl font-black">{selected.full_name}</h2><p className="font-bold mt-2 text-[#74675d]">{selected.member_id} • {selected.phone} • {selected.email}</p><div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-4 mt-7"><Metric label="Date of birth" value={formatDate(selected.date_of_birth)}/><Metric label="Anniversary" value={formatDate(selected.anniversary)}/><Metric label="Tier" value={pass?.tier || "Rewards only"}/><Metric label="Meals left" value={pass ? `${pass.meals_included-pass.meals_used}/${pass.meals_included}` : "—"}/></div><h3 className="text-xl font-black mt-7 mb-3">Redeem meal</h3><select className="input mb-4" value={itemName} onChange={(e)=>setItemName(e.target.value)}>{eligible.map((i)=><option key={i.name}>{i.name}</option>)}</select><button className="btn-primary mr-3" onClick={redeem}>Redeem selected meal</button><button className="btn-secondary" onClick={()=>addMessage(selected.id,"balance","Your Afghan Kabob balance",`You have ${pass ? pass.meals_included-pass.meals_used : 0} meals remaining.`)}>Send balance</button></div><div className="text-center"><Image alt="QR" src={qrUrl(selected.member_id || selected.id)} width={230} height={230} className="mx-auto"/><div className="font-black mt-3">{selected.member_id}</div></div></div><CustomerTables customer={selected} store={store}/></div>}</div></section>;
+
+  function activeUserIdForRedemption() {
+    try {
+      const raw = localStorage.getItem(SESSION);
+      if (!raw) return demoStaffId;
+      return (JSON.parse(raw) as ActiveSession).id || demoStaffId;
+    } catch {
+      return demoStaffId;
+    }
+  }
+
+  return (
+    <section>
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-8">
+        <div>
+          <h1 className="text-5xl font-black">Staff check-in</h1>
+          <p className="text-[#74675d] font-semibold mt-2">Search a customer, scan their QR/member ID, redeem meals, and view history.</p>
+        </div>
+        <button onClick={logout} className="btn-secondary">Logout</button>
+      </div>
+      <div className="grid lg:grid-cols-[340px_1fr] gap-8">
+        <div className="card p-5 h-fit">
+          <h2 className="text-2xl font-black mb-4">Search / scan</h2>
+          <input className="input mb-4" placeholder="Name, phone, email, member ID" value={query} onChange={(e)=>setQuery(e.target.value)} />
+          <button className="btn-primary w-full mb-5" onClick={()=>setQuery("AKR-AA4QN")}>Scan QR</button>
+          <div className="space-y-3 max-h-[600px] overflow-auto">
+            {filtered.map((c)=>{const p=store.passes.find(x=>x.customer_id===c.id);return <button key={c.id} onClick={()=>setSelectedId(c.id)} className={`w-full text-left border rounded-2xl p-3 hover:bg-kabob-cream ${selected?.id === c.id ? "border-kabob-green bg-kabob-cream" : "border-kabob-sand"}`}><div className="font-black">{c.full_name}</div><div className="text-sm text-[#766d65]">{c.member_id} • {c.phone}</div><div className="font-black text-kabob-green">{p ? `${p.meals_included-p.meals_used}/${p.meals_included} meals left` : "Rewards only"}</div></button>})}
+          </div>
+        </div>
+        {selected && <div className="space-y-6">
+          <div className="card p-7 md:p-8 grid xl:grid-cols-[1fr_260px] gap-8 items-start">
+            <div className="space-y-7">
+              <CustomerSummary customer={selected} pass={pass} />
+              <CustomerDetails customer={selected} pass={pass} />
+              <div>
+                <h3 className="text-2xl font-black mb-3">Redeem meal</h3>
+                <select className="input mb-4" value={itemName} onChange={(e)=>setItemName(e.target.value)}>{eligible.map((i)=><option key={i.name}>{i.name} — {i.category} — {money(i.price)}</option>)}</select>
+                <div className="flex flex-wrap gap-3">
+                  <button className="btn-primary" onClick={redeem}>Redeem selected meal</button>
+                  <button className="btn-secondary" onClick={()=>addMessage(selected.id,"balance","Your Afghan Kabob balance",`You have ${pass ? pass.meals_included-pass.meals_used : 0} meals remaining.`)}>Send balance</button>
+                </div>
+              </div>
+            </div>
+            <QrPanel customer={selected} size={230} />
+          </div>
+          <CustomerTables customer={selected} store={store}/>
+        </div>}
+      </div>
+    </section>
+  );
 }
 
 function Owner({ store, setStore, logout }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; logout: () => void }) {
   const [q, setQ] = useState("");
-  const [editing, setEditing] = useState("Afghan Chicken Kabob");
+  const [selectedTab, setSelectedTab] = useState<"customers" | "activity" | "messages" | "menu" | "offers">("customers");
+  const [editingName, setEditingName] = useState(store.menuItems[0]?.name || "");
+  const editingItem = store.menuItems.find((i) => i.name === editingName) || store.menuItems[0];
+  const [draft, setDraft] = useState<MenuItem>(editingItem || { name: "", category: "Kabob", price: 0, image_url: "" });
+
+  useEffect(() => {
+    const item = store.menuItems.find((i) => i.name === editingName) || store.menuItems[0];
+    if (item) setDraft({ ...item });
+  }, [editingName, store.menuItems]);
+
   const customers = store.profiles.filter((p) => p.role === "customer" && [p.full_name,p.email,p.phone,p.member_id].join(" ").toLowerCase().includes(q.toLowerCase()));
   const redRows = store.redemptions.map((r)=>{const c=store.profiles.find(p=>p.id===r.customer_id); const st=store.profiles.find(p=>p.id===r.staff_id); return [new Date(r.created_at).toLocaleString(), c?.full_name||"", r.item_name, st?.full_name||"Staff", String(r.meals_remaining ?? "")];});
-  return <section><div className="flex justify-between items-center mb-8"><h1 className="text-5xl font-black">Owner dashboard</h1><button onClick={logout} className="btn-secondary">Logout</button></div><div className="grid md:grid-cols-4 gap-4 mb-8"><Metric label="Customers" value={String(customers.length)}/><Metric label="Active passes" value={String(store.passes.filter(p=>p.status==='active').length)}/><Metric label="Redemptions" value={String(store.redemptions.length)}/><Metric label="Messages" value={String(store.messages.length)}/></div><div className="card p-6 mb-8"><div className="flex flex-col md:flex-row md:justify-between gap-4 mb-5"><h2 className="text-3xl font-black">Customer table</h2><input className="input md:max-w-sm" placeholder="Filter customers" value={q} onChange={(e)=>setQ(e.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>DOB</th><th>Anniversary</th><th>Tier</th><th>Meals left</th><th>Total spent</th></tr></thead><tbody>{customers.map((c)=>{const p=store.passes.find(x=>x.customer_id===c.id); const spent=store.orders.filter(o=>o.customer_id===c.id).reduce((a,o)=>a+o.total,0); return <tr key={c.id}><td className="font-black">{c.full_name}<br/><span className="text-xs text-[#766d65]">{c.member_id}</span></td><td>{c.email}</td><td>{c.phone}</td><td>{formatDate(c.date_of_birth)}</td><td>{formatDate(c.anniversary)}</td><td>{p?.tier || "Rewards"}</td><td>{p ? `${p.meals_included-p.meals_used}/${p.meals_included}` : "—"}</td><td>{money(spent)}</td></tr>})}</tbody></table></div></div><History title="Activity log" headers={["Date","Customer","Item","Redeemed by","Remaining"]} rows={redRows}/><div className="card p-6 mt-8"><h2 className="text-3xl font-black mb-5">Email / SMS outbox</h2><div className="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Channel</th><th>Type</th><th>Subject</th><th>Status</th><th></th></tr></thead><tbody>{store.messages.map((m)=>{const c=store.profiles.find(p=>p.id===m.customer_id); return <tr key={m.id}><td>{new Date(m.created_at).toLocaleString()}</td><td>{c?.full_name}</td><td>{m.channel}</td><td>{m.message_type}</td><td>{m.subject}</td><td><span className="pill">{m.status}</span></td><td><button className="btn-secondary !py-2" onClick={()=>setStore(s=>({...s,messages:s.messages.map(x=>x.id===m.id?{...x,status:"resent",sent_at:nowIso()}:x)}))}>Resend</button></td></tr>})}</tbody></table></div></div><div className="card p-6 mt-8"><h2 className="text-3xl font-black mb-2">Menu & offer settings</h2><p className="text-[#74675d] font-semibold mb-5">Owner-only controls for menu items, prices, and images. This is wired for the dashboard UI now; production saves these changes to Supabase.</p><div className="grid md:grid-cols-3 gap-4"><label><span className="label">Menu item</span><select className="input" value={editing} onChange={(e)=>setEditing(e.target.value)}>{menuItems.map((i)=><option key={i.name}>{i.name}</option>)}</select></label><Field name="price" label="Price" /><Field name="image" label="Image URL" /></div><button className="btn-secondary mt-5">Save menu update</button></div></section>;
+
+  async function saveMenuItem() {
+    if (!draft.name.trim()) return;
+    setStore((s) => ({
+      ...s,
+      menuItems: s.menuItems.some((i) => i.name === editingName)
+        ? s.menuItems.map((i) => i.name === editingName ? { ...draft, price: Number(draft.price) } : i)
+        : [{ ...draft, price: Number(draft.price) }, ...s.menuItems]
+    }));
+    setEditingName(draft.name);
+    if (isSupabaseConfigured) {
+      await supabaseBrowser()?.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null }, { onConflict: "name" });
+    }
+  }
+
+  function updateOffer(type: "birthdayDiscount" | "anniversaryDiscount", value: string) {
+    const percent = Number(value) || 0;
+    setStore((s) => ({ ...s, [type]: percent }));
+  }
+
+  return (
+    <section>
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-8">
+        <div>
+          <h1 className="text-5xl font-black">Owner dashboard</h1>
+          <p className="text-[#74675d] font-semibold mt-2">Manage customers, activity, messages, menu listings, photos, and offer settings.</p>
+        </div>
+        <button onClick={logout} className="btn-secondary">Logout</button>
+      </div>
+
+      <div className="grid md:grid-cols-4 gap-4 mb-8">
+        <Metric label="Customers" value={String(customers.length)}/>
+        <Metric label="Active passes" value={String(store.passes.filter(p=>p.status==='active').length)}/>
+        <Metric label="Redemptions" value={String(store.redemptions.length)}/>
+        <Metric label="Messages" value={String(store.messages.length)}/>
+      </div>
+
+      <div className="card p-3 md:p-4 mb-8 flex flex-wrap gap-2">
+        {[
+          ["customers", "Customers"],
+          ["activity", "Activity log"],
+          ["messages", "Email / SMS"],
+          ["menu", "Menu listings"],
+          ["offers", "Offer settings"]
+        ].map(([key,label]) => <button key={key} onClick={()=>setSelectedTab(key as any)} className={selectedTab === key ? "btn-primary" : "btn-secondary"}>{label}</button>)}
+      </div>
+
+      {selectedTab === "customers" && <div className="card p-6 mb-8"><div className="flex flex-col md:flex-row md:justify-between gap-4 mb-5"><h2 className="text-3xl font-black">Customer table</h2><input className="input md:max-w-sm" placeholder="Filter customers" value={q} onChange={(e)=>setQ(e.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>DOB</th><th>Anniversary</th><th>Tier</th><th>Meals left</th><th>Total spent</th></tr></thead><tbody>{customers.map((c)=>{const p=store.passes.find(x=>x.customer_id===c.id); const spent=store.orders.filter(o=>o.customer_id===c.id).reduce((a,o)=>a+o.total,0); return <tr key={c.id}><td className="font-black">{c.full_name}<br/><span className="text-xs text-[#766d65]">{c.member_id}</span></td><td>{c.email}</td><td>{c.phone}</td><td>{formatDate(c.date_of_birth)}</td><td>{formatDate(c.anniversary)}</td><td>{p?.tier || "Rewards"}</td><td>{p ? `${p.meals_included-p.meals_used}/${p.meals_included}` : "—"}</td><td>{money(spent)}</td></tr>})}</tbody></table></div></div>}
+
+      {selectedTab === "activity" && <History title="Activity log" headers={["Date","Customer","Item","Redeemed by","Remaining"]} rows={redRows}/>} 
+
+      {selectedTab === "messages" && <div className="card p-6"><h2 className="text-3xl font-black mb-5">Email / SMS outbox</h2><div className="table-wrap"><table><thead><tr><th>Date</th><th>Customer</th><th>Channel</th><th>Type</th><th>Subject</th><th>Status</th><th></th></tr></thead><tbody>{store.messages.map((m)=>{const c=store.profiles.find(p=>p.id===m.customer_id); return <tr key={m.id}><td>{new Date(m.created_at).toLocaleString()}</td><td>{c?.full_name}</td><td>{m.channel}</td><td>{m.message_type}</td><td>{m.subject}</td><td><span className="pill">{m.status}</span></td><td><button className="btn-secondary !py-2" onClick={()=>setStore(s=>({...s,messages:s.messages.map(x=>x.id===m.id?{...x,status:"resent",sent_at:nowIso()}:x)}))}>Resend</button></td></tr>})}</tbody></table></div></div>}
+
+      {selectedTab === "menu" && <div className="grid lg:grid-cols-[360px_1fr] gap-8">
+        <div className="card p-5 h-fit">
+          <h2 className="text-3xl font-black mb-4">Menu listings</h2>
+          <button className="btn-primary w-full mb-4" onClick={()=>{ setEditingName("new"); setDraft({ name: "", category: "Kabob", price: 0, image_url: "" }); }}>Add new item</button>
+          <div className="space-y-2 max-h-[560px] overflow-auto">
+            {store.menuItems.map((item) => <button key={item.name} className={`w-full text-left border rounded-2xl p-3 ${editingName === item.name ? "border-kabob-green bg-kabob-cream" : "border-kabob-sand"}`} onClick={()=>setEditingName(item.name)}><div className="font-black">{item.name}</div><div className="text-sm text-[#766d65]">{item.category} • {money(item.price)}</div></button>)}
+          </div>
+        </div>
+        <div className="card p-6 md:p-8">
+          <h2 className="text-3xl font-black mb-5">Edit listing</h2>
+          <div className="grid md:grid-cols-2 gap-5">
+            <label><span className="label">Item name</span><input className="input" value={draft.name} onChange={(e)=>setDraft({...draft, name:e.target.value})}/></label>
+            <label><span className="label">Category</span><select className="input" value={draft.category} onChange={(e)=>setDraft({...draft, category:e.target.value})}>{["Kabob","Donair","Specials","Platters","Sides","Drinks"].map(c=><option key={c}>{c}</option>)}</select></label>
+            <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
+            <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})} placeholder="https://..."/></label>
+          </div>
+          <button className="btn-primary mt-6" onClick={saveMenuItem}>Save listing</button>
+          <p className="text-sm text-[#74675d] font-semibold mt-4">Only owner accounts can edit menu listings, prices, and photos. Staff can search and redeem only.</p>
+        </div>
+      </div>}
+
+      {selectedTab === "offers" && <div className="card p-6 md:p-8 max-w-[760px]"><h2 className="text-3xl font-black mb-5">Offer settings</h2><div className="grid md:grid-cols-2 gap-5"><label><span className="label">Birthday discount %</span><input className="input" type="number" value={store.birthdayDiscount} onChange={(e)=>updateOffer("birthdayDiscount", e.target.value)}/></label><label><span className="label">Anniversary discount %</span><input className="input" type="number" value={store.anniversaryDiscount} onChange={(e)=>updateOffer("anniversaryDiscount", e.target.value)}/></label></div><p className="text-sm text-[#74675d] font-semibold mt-4">These settings control the birthday and anniversary offers shown in the owner messaging workflow.</p></div>}
+    </section>
+  );
 }
 
 function CustomerTables({ customer, store }: { customer: Profile; store: Store }) {
@@ -582,6 +722,33 @@ function CustomerTables({ customer, store }: { customer: Profile; store: Store }
   const reds = store.redemptions.filter((r)=>r.customer_id===customer.id);
   const msgs = store.messages.filter((m)=>m.customer_id===customer.id);
   return <div className="space-y-6"><History title="Previous orders" headers={["Date","Type","Total","Status"]} rows={orders.map((o)=>[new Date(o.created_at).toLocaleString(),o.order_type,money(o.total),o.payment_status])}/><History title="Previous redemptions" headers={["Date","Item","Category","Remaining"]} rows={reds.map((r)=>[new Date(r.created_at).toLocaleString(),r.item_name,r.category||"",String(r.meals_remaining ?? "")])}/><History title="Messages" headers={["Date","Type","Channel","Status"]} rows={msgs.map((m)=>[new Date(m.created_at).toLocaleString(),m.message_type,m.channel,m.status])}/></div>;
+}
+
+function CustomerSummary({ customer, pass }: { customer: Profile; pass?: MealPass }) {
+  return (
+    <div>
+      <h2 className="text-4xl md:text-5xl font-black leading-tight">{customer.full_name}</h2>
+      <p className="customer-line mt-3">{customer.phone || "No phone"} <span>•</span> {customer.email || "No email"}</p>
+      <p className="customer-line">Member ID: <strong>{customer.member_id || "—"}</strong></p>
+      {pass && <p className="customer-line">Pass: <strong>{pass.tier}</strong> <span>•</span> {pass.frequency} <span>•</span> {pass.status}</p>}
+    </div>
+  );
+}
+
+function CustomerDetails({ customer, pass }: { customer: Profile; pass?: MealPass }) {
+  const rows = [
+    ["Date of birth", formatDate(customer.date_of_birth)],
+    ["Anniversary", formatDate(customer.anniversary)],
+    ["Tier", pass?.tier || "Rewards only"],
+    ["Meals left", pass ? `${pass.meals_included - pass.meals_used} of ${pass.meals_included}` : "—"],
+    ["Frequency", pass?.frequency || "—"],
+    ["Renewal", formatDate(pass?.renewal_date)]
+  ];
+  return <dl className="profile-detail-grid">{rows.map(([label, value]) => <div className="profile-detail-row" key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
+}
+
+function QrPanel({ customer, size }: { customer: Profile; size: number }) {
+  return <div className="card-soft p-5 text-center"><Image alt="Member QR" src={qrUrl(customer.member_id || customer.id)} width={size} height={size} className="mx-auto" /><div className="text-xl font-black mt-4">{customer.member_id}</div></div>;
 }
 
 function Field({ name, label, type="text", required=false }: { name: string; label: string; type?: string; required?: boolean }) { return <label><span className="label">{label}{required ? " *" : ""}</span><input className="input" name={name} type={type} required={required}/></label>; }

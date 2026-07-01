@@ -77,16 +77,58 @@ create index if not exists profiles_member_idx on profiles(member_id);
 create index if not exists redemptions_customer_idx on redemptions(customer_id);
 create index if not exists messages_customer_idx on messages(customer_id);
 
--- Demo rows for quick testing in Supabase table view.
-insert into profiles (id, role, full_name, email, phone, date_of_birth, anniversary, member_id, pin_code)
+-- Owner-editable menu listings used by the owner dashboard.
+create table if not exists menu_items (
+  name text primary key,
+  category text not null,
+  price numeric not null,
+  image_url text,
+  active boolean not null default true,
+  updated_at timestamp with time zone default now()
+);
+
+insert into menu_items (name, category, price, image_url)
 values
-('00000000-0000-0000-0000-000000000101','customer','Kumail Rizvi','kumail@example.com','3065557788','1998-07-10','2026-12-05','AKR-AA4QN','1234'),
-('00000000-0000-0000-0000-000000000102','customer','Sara Ahmed','sara@example.com','3065551122','1996-08-14','2026-10-01','AKR-XZXVM','2222'),
-('00000000-0000-0000-0000-000000000201','staff','Staff User','staff@afghankabob.ca','',null,null,null,'staff123'),
-('00000000-0000-0000-0000-000000000301','owner','Owner User','owner@afghankabob.ca','',null,null,null,'owner123')
+('Tandoori Chicken Fry','Kabob',22,null),
+('Spicy Beef BBQ','Kabob',22,null),
+('Afghan Chicken Kabob','Kabob',22,null),
+('Afghan Beef Kabob','Kabob',22,null),
+('12” Jumbo Donair','Donair',14,null),
+('12” Super Jumbo Donair','Donair',17,null),
+('Donair Plate','Donair',18,null),
+('Lamb Shank','Specials',26,null),
+('Lamb Steak','Specials',26,null),
+('Loaded Fries','Specials',13,null),
+('Platter for 2','Platters',42,null),
+('Platter for 3','Platters',60,null)
+on conflict (name) do nothing;
+
+create table if not exists offer_settings (
+  id text primary key default 'default',
+  birthday_discount numeric not null default 10,
+  anniversary_discount numeric not null default 10,
+  updated_at timestamp with time zone default now()
+);
+
+insert into offer_settings (id, birthday_discount, anniversary_discount)
+values ('default', 10, 10)
 on conflict (id) do nothing;
 
-insert into meal_passes (customer_id, frequency, tier, meals_included, meals_used, price, status, renewal_date)
-values
-('00000000-0000-0000-0000-000000000101','monthly','Monthly Classic',8,1,109.99,'active', current_date + interval '30 days'),
-('00000000-0000-0000-0000-000000000102','weekly','Weekly Value',3,1,39.99,'active', current_date + interval '7 days');
+alter table public.menu_items enable row level security;
+alter table public.offer_settings enable row level security;
+
+drop policy if exists "menu_items_read_authenticated" on public.menu_items;
+create policy "menu_items_read_authenticated" on public.menu_items
+for select to authenticated using (true);
+
+drop policy if exists "menu_items_write_authenticated" on public.menu_items;
+create policy "menu_items_write_authenticated" on public.menu_items
+for all to authenticated using (true) with check (true);
+
+drop policy if exists "offer_settings_read_authenticated" on public.offer_settings;
+create policy "offer_settings_read_authenticated" on public.offer_settings
+for select to authenticated using (true);
+
+drop policy if exists "offer_settings_write_authenticated" on public.offer_settings;
+create policy "offer_settings_write_authenticated" on public.offer_settings
+for all to authenticated using (true) with check (true);
