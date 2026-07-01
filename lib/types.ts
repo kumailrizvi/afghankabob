@@ -35,6 +35,7 @@ export type Order = {
   tax: number;
   total: number;
   payment_status: string;
+  paid_at?: string | null;
   created_at: string;
 };
 

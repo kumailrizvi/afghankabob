@@ -352,3 +352,50 @@ tr:hover td { background: #fff8ef; }
   justify-content: center;
   cursor: not-allowed;
 }
+
+
+/* v10: clearer selected plan outline, dollar inputs, and in-store payment status */
+.plan-card {
+  border-width: 2px;
+  transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease, background .15s ease;
+}
+.plan-card:hover { transform: translateY(-2px); border-color: rgba(15,81,56,.35); }
+.plan-card-selected {
+  border-color: var(--green) !important;
+  background: #fffaf2;
+  box-shadow: 0 0 0 4px rgba(15,81,56,.12), 0 20px 65px rgba(33,24,19,.10);
+}
+.selected-badge {
+  border: 1px solid var(--green);
+  color: var(--green);
+  background: #edf7f0;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.price-input-wrap { position: relative; }
+.price-input-wrap > span {
+  position: absolute;
+  left: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--green);
+  font-weight: 900;
+  z-index: 1;
+}
+.price-input { padding-left: 38px !important; }
+.payment-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  border: 1px solid var(--sand);
+  border-radius: 18px;
+  padding: 14px 16px;
+  background: #fffaf5;
+  cursor: pointer;
+}
+.payment-row input { margin-top: 5px; width: 18px; height: 18px; accent-color: var(--green); }
+.payment-row-paid { background: #edf7f0; border-color: rgba(15,81,56,.35); cursor: default; }

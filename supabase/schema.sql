@@ -194,3 +194,6 @@ for select to authenticated using (true);
 drop policy if exists "meal_plan_settings_write_authenticated" on public.meal_plan_settings;
 create policy "meal_plan_settings_write_authenticated" on public.meal_plan_settings
 for all to authenticated using (true) with check (true);
+
+-- v10: payment confirmation for in-store orders
+alter table public.orders add column if not exists paid_at timestamp with time zone;

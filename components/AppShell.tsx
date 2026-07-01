@@ -30,7 +30,7 @@ type Store = {
 
 const nowIso = () => new Date().toISOString();
 const money = (n: number) => `$${n.toFixed(2)}`;
-const STORAGE = "akr-next-store-v2";
+const STORAGE = "akr-next-store-v3";
 const SESSION = "akr-active-session-v1";
 
 type ActiveSession = { id: string; role: Role; email?: string | null };
@@ -425,7 +425,7 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
     const passId = crypto.randomUUID();
     const orderId = crypto.randomUUID();
     const pass: MealPass = { id: passId, customer_id: savedCustomer.id, frequency: plan.frequency, tier: plan.tier, meals_included: plan.meals, meals_used: 0, price: plan.price, status: "active", start_date: new Date().toISOString().slice(0, 10), renewal_date: daysToRenewal(plan.frequency) };
-    const order: Order = { id: orderId, customer_id: savedCustomer.id, meal_pass_id: passId, order_type: String(form.get("payMode")) === "in_store" ? "in_store" : "online", subtotal: plan.price, tax: +(plan.price * 0.11).toFixed(2), total: +(plan.price * 1.11).toFixed(2), payment_status: String(form.get("payMode")) === "in_store" ? "pending" : "paid", created_at: nowIso() };
+    const order: Order = { id: orderId, customer_id: savedCustomer.id, meal_pass_id: passId, order_type: String(form.get("payMode")) === "in_store" ? "in_store" : "online", subtotal: plan.price, tax: +(plan.price * 0.11).toFixed(2), total: +(plan.price * 1.11).toFixed(2), payment_status: String(form.get("payMode")) === "in_store" ? "pending_in_store" : "paid", paid_at: String(form.get("payMode")) === "in_store" ? null : nowIso(), created_at: nowIso() };
     const chosenItems = items.length ? items : eligibleItems.slice(0, plan.meals).map((i) => ({ ...i, quantity: 1 }));
     setStore((s) => ({ ...s, passes: [pass, ...s.passes], orders: [order, ...s.orders], orderItems: { ...s.orderItems, [orderId]: chosenItems } }));
     if (isSupabaseConfigured) {
@@ -478,8 +478,8 @@ function MealPass({ store, saveProfile, setStore, addMessage }: { store: Store; 
       </div>
       <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6 mb-10">
         {plans.filter((p) => p.frequency === frequency).map((p) => (
-          <button key={p.id} onClick={() => setPlanId(p.id)} className={`card p-7 text-left ${planId === p.id ? "ring-4 ring-[#10583f22] border-kabob-green" : ""}`}>
-            <div className="text-2xl font-black">{p.tier}</div>
+          <button key={p.id} onClick={() => setPlanId(p.id)} className={`card p-7 text-left plan-card ${planId === p.id ? "plan-card-selected" : ""}`}>
+            <div className="flex items-start justify-between gap-3"><div className="text-2xl font-black">{p.tier}</div>{planId === p.id && <span className="selected-badge">Selected</span>}</div>
             <div className="text-lg font-extrabold text-kabob-green mt-2">{p.meals} meals / {p.frequency}</div>
             <div className="text-3xl font-black mt-4">{money(p.price)} <span className="text-base line-through text-[#9a9188]">{p.compareAt ? money(p.compareAt) : ""}</span></div>
             <p className="text-sm text-[#766d65] font-semibold mt-3 leading-6">{p.description}</p>
@@ -636,6 +636,18 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
     await addMessage(selected.id, "meal_redeemed", "Your meal pass was used", `${item.name} redeemed. ${remaining} meals remaining.`);
   }
 
+  async function markInStorePaid(order: Order) {
+    if (!selected) return;
+    const paidAt = nowIso();
+    const updated = { ...order, payment_status: "paid_in_store", paid_at: paidAt } as Order;
+    setStore((s) => ({ ...s, orders: s.orders.map((o) => o.id === order.id ? updated : o) }));
+    await addAuditLog("marked_in_store_order_paid", "order", order.id, JSON.stringify(order), JSON.stringify(updated));
+    if (isSupabaseConfigured) {
+      await supabaseBrowser()?.from("orders").update({ payment_status: "paid_in_store", paid_at: paidAt }).eq("id", order.id);
+    }
+    await addMessage(selected.id, "payment_confirmed", "In-store payment received", `Your in-store payment was recorded on ${new Date(paidAt).toLocaleString()}.`);
+  }
+
   function activeUserIdForRedemption() {
     try {
       const raw = localStorage.getItem(SESSION);
@@ -683,6 +695,7 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
             </div>
             <QrPanel customer={selected} size={230} />
           </div>
+          <InStorePaymentPanel orders={customerOrders} onMarkPaid={markInStorePaid} />
           <SelectedMealsPanel items={selectedMealItems} />
           <CustomerTables customer={selected} store={store}/>
         </div>}
@@ -797,7 +810,7 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
           <div className="grid md:grid-cols-2 gap-5">
             <label><span className="label">Item name</span><input className="input" value={draft.name} onChange={(e)=>setDraft({...draft, name:e.target.value})}/></label>
             <label><span className="label">Category</span><select className="input" value={draft.category} onChange={(e)=>setDraft({...draft, category:e.target.value})}>{["Kabob","Donair","Specials","Platters","Sides","Drinks"].map(c=><option key={c}>{c}</option>)}</select></label>
-            <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
+            <PriceInput label="Price" value={draft.price} onChange={(v)=>setDraft({...draft, price:v})} />
             <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})} placeholder="https://..."/></label>
             <label className="md:col-span-2"><span className="label">Description</span><textarea className="input min-h-[110px]" value={draft.description || ""} onChange={(e)=>setDraft({...draft, description:e.target.value})} placeholder="Short item description shown under the accordion."/></label>
             <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={(e)=>{ const file=e.target.files?.[0]; if(file) readImageFile(file, (url)=>setDraft({...draft, image_url:url})); }}/></label>
@@ -898,7 +911,7 @@ function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, 
           <div className="grid md:grid-cols-2 gap-5">
             <label><span className="label">Item name</span><input className="input" value={draft.name} onChange={(e)=>setDraft({...draft, name:e.target.value})}/></label>
             <label><span className="label">Category</span><select className="input" value={draft.category} onChange={(e)=>setDraft({...draft, category:e.target.value})}>{["Kabob","Donair","Specials","Platters","Sides","Drinks"].map(c=><option key={c}>{c}</option>)}</select></label>
-            <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
+            <PriceInput label="Price" value={draft.price} onChange={(v)=>setDraft({...draft, price:v})} />
             <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})}/></label>
             <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={(e)=>{ const file=e.target.files?.[0]; if(file) readImageFile(file, (url)=>setDraft({...draft, image_url:url})); }}/></label>
             {draft.image_url && <div className="md:col-span-2 menu-image-preview"><img src={draft.image_url} alt={draft.name || "Menu item preview"}/><span>Image preview</span></div>}
@@ -913,11 +926,35 @@ function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, 
   );
 }
 
+function InStorePaymentPanel({ orders, onMarkPaid }: { orders: Order[]; onMarkPaid: (order: Order) => void }) {
+  const inStore = orders.filter((o) => o.order_type === "in_store");
+  if (!inStore.length) return null;
+  return (
+    <div className="card p-6">
+      <h2 className="text-2xl font-black mb-3">In-store payment</h2>
+      <div className="space-y-3">
+        {inStore.map((order) => {
+          const paid = order.payment_status === "paid_in_store" || order.payment_status === "paid";
+          return (
+            <label key={order.id} className={`payment-row ${paid ? "payment-row-paid" : ""}`}>
+              <input type="checkbox" checked={paid} disabled={paid} onChange={() => onMarkPaid(order)} />
+              <div>
+                <div className="font-black">{money(order.total)} · {paid ? "Paid in store" : "Needs in-store payment"}</div>
+                <div className="text-sm font-bold text-[#74675d]">Submitted {new Date(order.created_at).toLocaleString()}{order.paid_at ? ` · Paid ${new Date(order.paid_at).toLocaleString()}` : ""}</div>
+              </div>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function CustomerTables({ customer, store }: { customer: Profile; store: Store }) {
   const orders = store.orders.filter((o)=>o.customer_id===customer.id);
   const reds = store.redemptions.filter((r)=>r.customer_id===customer.id);
   const msgs = store.messages.filter((m)=>m.customer_id===customer.id);
-  return <div className="space-y-6"><History title="Previous orders" headers={["Date","Type","Total","Status"]} rows={orders.map((o)=>[new Date(o.created_at).toLocaleString(),o.order_type,money(o.total),o.payment_status])}/><History title="Previous redemptions" headers={["Date","Item","Category","Remaining"]} rows={reds.map((r)=>[new Date(r.created_at).toLocaleString(),r.item_name,r.category||"",String(r.meals_remaining ?? "")])}/><History title="Messages" headers={["Date","Type","Channel","Status"]} rows={msgs.map((m)=>[new Date(m.created_at).toLocaleString(),m.message_type,m.channel,m.status])}/></div>;
+  return <div className="space-y-6"><History title="Previous orders" headers={["Date","Type","Total","Status","Paid date"]} rows={orders.map((o)=>[new Date(o.created_at).toLocaleString(),o.order_type,money(o.total),o.payment_status,o.paid_at ? new Date(o.paid_at).toLocaleString() : "—"])}/><History title="Previous redemptions" headers={["Date","Item","Category","Remaining"]} rows={reds.map((r)=>[new Date(r.created_at).toLocaleString(),r.item_name,r.category||"",String(r.meals_remaining ?? "")])}/><History title="Messages" headers={["Date","Type","Channel","Status"]} rows={msgs.map((m)=>[new Date(m.created_at).toLocaleString(),m.message_type,m.channel,m.status])}/></div>;
 }
 
 function CustomerSummary({ customer, pass }: { customer: Profile; pass?: MealPass }) {
@@ -988,14 +1025,23 @@ function MealPlanEditor({ store, setStore, addAuditLog, staffMode=false }: { sto
         <label><span className="label">Frequency</span><select className="input" value={draft.frequency} onChange={(e)=>setDraft({...draft, frequency:e.target.value as MealPlan["frequency"]})}>{["daily","weekly","monthly"].map(f=><option key={f}>{f}</option>)}</select></label>
         <label><span className="label">Tier name</span><input className="input" value={draft.tier} onChange={(e)=>setDraft({...draft, tier:e.target.value})}/></label>
         <label><span className="label">Meals included</span><input className="input" type="number" value={draft.meals} onChange={(e)=>setDraft({...draft, meals:Number(e.target.value)})}/></label>
-        <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
-        <label><span className="label">Compare-at price</span><input className="input" type="number" step="0.01" value={draft.compareAt || ""} onChange={(e)=>setDraft({...draft, compareAt:e.target.value ? Number(e.target.value) : undefined})}/></label>
+        <PriceInput label="Price" value={draft.price} onChange={(v)=>setDraft({...draft, price:v})} />
+        <PriceInput label="Compare-at price" value={draft.compareAt || ""} onChange={(v)=>setDraft({...draft, compareAt:v || undefined})} />
         <label className="md:col-span-2"><span className="label">Eligible categories</span><input className="input" value={draft.categories.join(", ")} onChange={(e)=>setDraft({...draft, categories:e.target.value.split(",").map(x=>x.trim()).filter(Boolean)})} placeholder="Kabob, Donair, Specials"/></label>
         <label className="md:col-span-2"><span className="label">Description</span><textarea className="input min-h-[100px]" value={draft.description} onChange={(e)=>setDraft({...draft, description:e.target.value})}/></label>
         <div className="md:col-span-2"><button className="btn-primary" onClick={savePlan}>Save meal pass</button></div>
       </div>
     </div>
   </div>;
+}
+
+function PriceInput({ label, value, onChange }: { label: string; value: number | string; onChange: (value: number) => void }) {
+  return (
+    <label>
+      <span className="label">{label}</span>
+      <div className="price-input-wrap"><span>$</span><input className="input price-input" type="number" step="0.01" value={value} onChange={(e)=>onChange(Number(e.target.value))}/></div>
+    </label>
+  );
 }
 
 function Field({ name, label, type="text", required=false }: { name: string; label: string; type?: string; required?: boolean }) { return <label><span className="label">{label}{required ? " *" : ""}</span><input className="input" name={name} type={type} required={required}/></label>; }
