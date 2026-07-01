@@ -258,3 +258,22 @@ tr:hover td { background: #fff8ef; }
 @media (max-width: 700px) {
   .profile-detail-row { grid-template-columns: 1fr; gap: 6px; }
 }
+
+.menu-image-preview {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--sand);
+  border-radius: 22px;
+  padding: 14px;
+  background: var(--cream);
+  font-weight: 900;
+  color: var(--green);
+}
+.menu-image-preview img {
+  width: 120px;
+  height: 90px;
+  object-fit: cover;
+  border-radius: 16px;
+  background: #efe8df;
+}

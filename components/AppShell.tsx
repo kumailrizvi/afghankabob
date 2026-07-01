@@ -8,7 +8,7 @@ import { memberId, qrUrl } from "@/lib/qr";
 import { isSupabaseConfigured, supabaseBrowser } from "@/lib/supabase";
 import type { MealPass, Message, Order, Profile, Redemption, Role } from "@/lib/types";
 
-type View = "meal-pass" | "rewards" | "login" | "team-login" | "account" | "staff" | "owner";
+type View = "meal-pass" | "rewards" | "login" | "team-login" | "account" | "staff" | "staff-menu" | "owner";
 type MenuItem = { name: string; category: string; price: number; image_url?: string };
 type OrderItem = MenuItem & { quantity: number };
 
@@ -37,6 +37,12 @@ type ActiveSession = { id: string; role: Role; email?: string | null };
 const demoCustomerId = "demo-customer-1";
 const demoStaffId = "demo-staff-1";
 const demoOwnerId = "demo-owner-1";
+
+function readImageFile(file: File, onDone: (dataUrl: string) => void) {
+  const reader = new FileReader();
+  reader.onload = () => onDone(String(reader.result || ""));
+  reader.readAsDataURL(file);
+}
 
 function formatDate(value?: string | null) {
   if (!value) return "—";
@@ -335,7 +341,7 @@ export function AppShell({ view }: { view: View }) {
   }
 
   const needsCustomer = view === "account";
-  const needsStaff = view === "staff";
+  const needsStaff = view === "staff" || view === "staff-menu";
   const needsOwner = view === "owner";
   const blocked = (needsCustomer && activeRole !== "customer") || (needsStaff && activeRole !== "staff") || (needsOwner && activeRole !== "owner");
 
@@ -357,6 +363,7 @@ export function AppShell({ view }: { view: View }) {
       {view === "team-login" && <TeamLogin login={login} activeRole={activeRole} />}
       {view === "account" && <Account store={store} profile={activeProfile} />}
       {view === "staff" && <Staff store={store} setStore={setStore} addMessage={addMessage} addAuditLog={addAuditLog} logout={logout} />}
+      {view === "staff-menu" && <StaffMenu store={store} setStore={setStore} addAuditLog={addAuditLog} logout={logout} />}
       {view === "owner" && <Owner store={store} setStore={setStore} addAuditLog={addAuditLog} logout={logout} />}
     </main>
   );
@@ -622,7 +629,10 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
           <h1 className="text-5xl font-black">Staff check-in</h1>
           <p className="text-[#74675d] font-semibold mt-2">Search a customer, scan their QR/member ID, redeem meals, and view history.</p>
         </div>
-        <button onClick={logout} className="btn-secondary">Logout</button>
+        <div className="flex flex-wrap gap-3">
+          <a href="/staff/menu" className="btn-secondary">Menu edits</a>
+          <button onClick={logout} className="btn-secondary">Logout</button>
+        </div>
       </div>
       <div className="grid lg:grid-cols-[340px_1fr] gap-8">
         <div className="card p-5 h-fit">
@@ -651,9 +661,29 @@ function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: St
           </div>
           <SelectedMealsPanel items={selectedMealItems} />
           <CustomerTables customer={selected} store={store}/>
-          <StaffEditPanel store={store} setStore={setStore} editCode={editCode} setEditCode={setEditCode} editUnlocked={editUnlocked} setEditUnlocked={setEditUnlocked} addAuditLog={addAuditLog} />
         </div>}
       </div>
+    </section>
+  );
+}
+
+
+function StaffMenu({ store, setStore, addAuditLog, logout }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; addAuditLog: (a: string, e: string, n: string, b: string | null, af: string | null) => Promise<void>; logout: () => void }) {
+  const [editUnlocked, setEditUnlocked] = useState(false);
+  const [editCode, setEditCode] = useState("");
+  return (
+    <section>
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4 mb-8">
+        <div>
+          <h1 className="text-5xl font-black">Menu edits</h1>
+          <p className="text-[#74675d] font-semibold mt-2">Staff can update menu listings only after entering the manager code. Every change is saved in the owner change log.</p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <a href="/staff" className="btn-secondary">Back to check-in</a>
+          <button onClick={logout} className="btn-secondary">Logout</button>
+        </div>
+      </div>
+      <StaffEditPanel store={store} setStore={setStore} editCode={editCode} setEditCode={setEditCode} editUnlocked={editUnlocked} setEditUnlocked={setEditUnlocked} addAuditLog={addAuditLog} />
     </section>
   );
 }
@@ -744,9 +774,11 @@ function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStor
             <label><span className="label">Category</span><select className="input" value={draft.category} onChange={(e)=>setDraft({...draft, category:e.target.value})}>{["Kabob","Donair","Specials","Platters","Sides","Drinks"].map(c=><option key={c}>{c}</option>)}</select></label>
             <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
             <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})} placeholder="https://..."/></label>
+            <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={(e)=>{ const file=e.target.files?.[0]; if(file) readImageFile(file, (url)=>setDraft({...draft, image_url:url})); }}/></label>
+            {draft.image_url && <div className="md:col-span-2 menu-image-preview"><img src={draft.image_url} alt={draft.name || "Menu item preview"}/><span>Image preview</span></div>}
           </div>
           <button className="btn-primary mt-6" onClick={saveMenuItem}>Save listing</button>
-          <p className="text-sm text-[#74675d] font-semibold mt-4">Only owner accounts can edit menu listings, prices, and photos. Staff can search and redeem only.</p>
+          <p className="text-sm text-[#74675d] font-semibold mt-4">Owners can edit menu listings here. Staff can edit from the separate Menu edits page only with the manager code. Every change is saved in the change log.</p>
         </div>
       </div>}
 
@@ -802,8 +834,8 @@ function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, 
 
   return (
     <div className="card p-6">
-      <h2 className="text-2xl font-black mb-2">Manager edits</h2>
-      <p className="text-[#74675d] font-semibold mb-5">Staff can update menu listings only with the manager code. Every change is saved in the owner change log.</p>
+      <h2 className="text-2xl font-black mb-2">Edit menu listing</h2>
+      <p className="text-[#74675d] font-semibold mb-5">Choose an item, edit details, upload a photo, then save. Changes are logged for the owner.</p>
       {!editUnlocked ? (
         <div className="flex flex-col sm:flex-row gap-3 max-w-xl">
           <input className="input" value={editCode} onChange={(e)=>setEditCode(e.target.value)} placeholder="Enter manager code" type="password" />
@@ -820,6 +852,8 @@ function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, 
             <label><span className="label">Category</span><select className="input" value={draft.category} onChange={(e)=>setDraft({...draft, category:e.target.value})}>{["Kabob","Donair","Specials","Platters","Sides","Drinks"].map(c=><option key={c}>{c}</option>)}</select></label>
             <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
             <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})}/></label>
+            <label className="md:col-span-2"><span className="label">Upload image</span><input className="input" type="file" accept="image/*" onChange={(e)=>{ const file=e.target.files?.[0]; if(file) readImageFile(file, (url)=>setDraft({...draft, image_url:url})); }}/></label>
+            {draft.image_url && <div className="md:col-span-2 menu-image-preview"><img src={draft.image_url} alt={draft.name || "Menu item preview"}/><span>Image preview</span></div>}
             <div className="md:col-span-2"><button className="btn-primary" onClick={save}>Save change</button></div>
           </div>
         </div>
