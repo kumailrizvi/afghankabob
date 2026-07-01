@@ -22,6 +22,8 @@ type Store = {
   menuItems: MenuItem[];
   birthdayDiscount: number;
   anniversaryDiscount: number;
+  managerEditCode: string;
+  auditLogs: { id: string; actor_id?: string | null; actor_name: string; action: string; entity_type: string; entity_name: string; before_value?: string | null; after_value?: string | null; created_at: string; }[];
   passwords: Record<string, string>;
 };
 
@@ -81,7 +83,9 @@ function initialStore(): Store {
     ],
     menuItems: menuItems.map((item) => ({ ...item })),
     birthdayDiscount: 10,
-    anniversaryDiscount: 10
+    anniversaryDiscount: 10,
+    managerEditCode: "4321",
+    auditLogs: []
   };
 }
 
@@ -108,7 +112,7 @@ export function AppShell({ view }: { view: View }) {
       const rawStore = localStorage.getItem(STORAGE);
       if (rawStore) {
         try {
-          setStore((() => { const parsed = JSON.parse(rawStore); return { ...parsed, menuItems: parsed.menuItems || menuItems.map((item) => ({ ...item })), birthdayDiscount: parsed.birthdayDiscount ?? 10, anniversaryDiscount: parsed.anniversaryDiscount ?? 10 }; })());
+          setStore((() => { const parsed = JSON.parse(rawStore); return { ...parsed, menuItems: parsed.menuItems || menuItems.map((item) => ({ ...item })), birthdayDiscount: parsed.birthdayDiscount ?? 10, anniversaryDiscount: parsed.anniversaryDiscount ?? 10, managerEditCode: parsed.managerEditCode || "4321", auditLogs: parsed.auditLogs || [] }; })());
         } catch {
           localStorage.removeItem(STORAGE);
         }
@@ -309,6 +313,27 @@ export function AppShell({ view }: { view: View }) {
     }
   }
 
+
+
+  async function addAuditLog(action: string, entityType: string, entityName: string, beforeValue: string | null, afterValue: string | null) {
+    const actor = store.profiles.find((p) => p.id === activeUserId);
+    const log = {
+      id: crypto.randomUUID(),
+      actor_id: actor?.id || null,
+      actor_name: actor?.full_name || "System",
+      action,
+      entity_type: entityType,
+      entity_name: entityName,
+      before_value: beforeValue,
+      after_value: afterValue,
+      created_at: nowIso()
+    };
+    setStore((s) => ({ ...s, auditLogs: [log, ...(s.auditLogs || [])] }));
+    if (isSupabaseConfigured) {
+      await supabaseBrowser()?.from("audit_logs").insert(log);
+    }
+  }
+
   const needsCustomer = view === "account";
   const needsStaff = view === "staff";
   const needsOwner = view === "owner";
@@ -331,8 +356,8 @@ export function AppShell({ view }: { view: View }) {
       {view === "login" && <Login title="Customer login" role="customer" login={login} activeProfile={activeProfile} store={store} />}
       {view === "team-login" && <TeamLogin login={login} activeRole={activeRole} />}
       {view === "account" && <Account store={store} profile={activeProfile} />}
-      {view === "staff" && <Staff store={store} setStore={setStore} addMessage={addMessage} logout={logout} />}
-      {view === "owner" && <Owner store={store} setStore={setStore} logout={logout} />}
+      {view === "staff" && <Staff store={store} setStore={setStore} addMessage={addMessage} addAuditLog={addAuditLog} logout={logout} />}
+      {view === "owner" && <Owner store={store} setStore={setStore} addAuditLog={addAuditLog} logout={logout} />}
     </main>
   );
 }
@@ -541,26 +566,33 @@ function PassCard({ customer, store }: { customer: Profile; store: Store }) {
   );
 }
 
-function Staff({ store, setStore, addMessage, logout }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; addMessage: (id: string, t: string, s: string, b: string) => Promise<void>; logout: () => void }) {
+function Staff({ store, setStore, addMessage, addAuditLog, logout }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; addMessage: (id: string, t: string, s: string, b: string) => Promise<void>; addAuditLog: (a: string, e: string, n: string, b: string | null, af: string | null) => Promise<void>; logout: () => void }) {
   const customers = store.profiles.filter((p) => p.role === "customer");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState(customers[0]?.id || "");
   const selected = customers.find((c) => c.id === selectedId) || customers[0];
   const pass = store.passes.find((p) => p.customer_id === selected?.id);
-  const plan = mealPlans.find((p) => p.tier === pass?.tier) || mealPlans[2];
-  const eligible = store.menuItems.filter((i) => plan.categories.includes(i.category));
-  const [itemName, setItemName] = useState(eligible[0]?.name || "");
+  const customerOrders = store.orders.filter((o) => o.customer_id === selected?.id).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const latestOrder = customerOrders[0];
+  const selectedMealItems = latestOrder ? (store.orderItems[latestOrder.id] || []) : [];
+  const selectedMealOptions = selectedMealItems.length
+    ? selectedMealItems.flatMap((i) => Array.from({ length: i.quantity || 1 }, () => ({ name: i.name, category: i.category, price: i.price })))
+    : [];
+  const [itemName, setItemName] = useState(selectedMealOptions[0]?.name || "");
+  const [editUnlocked, setEditUnlocked] = useState(false);
+  const [editCode, setEditCode] = useState("");
 
   useEffect(() => {
-    if (eligible.length && !eligible.some((i) => i.name === itemName)) setItemName(eligible[0].name);
-  }, [eligible, itemName]);
+    if (selectedMealOptions.length && !selectedMealOptions.some((i) => i.name === itemName)) setItemName(selectedMealOptions[0].name);
+    if (!selectedMealOptions.length) setItemName("");
+  }, [selectedId, selectedMealOptions.map((i) => i.name).join("|"), itemName]);
 
   const filtered = customers.filter((c) => [c.full_name, c.email, c.phone, c.member_id].join(" ").toLowerCase().includes(query.toLowerCase()));
 
   async function redeem() {
     if (!selected || !pass) return;
     if (pass.meals_used >= pass.meals_included) return alert("No meals left.");
-    const item = store.menuItems.find((i) => i.name === itemName) || eligible[0];
+    const item = selectedMealOptions.find((i) => i.name === itemName);
     if (!item) return;
     const remaining = pass.meals_included - pass.meals_used - 1;
     const red: Redemption = { id: crypto.randomUUID(), customer_id: selected.id, meal_pass_id: pass.id, staff_id: activeUserIdForRedemption(), item_name: item.name, category: item.category, meals_remaining: remaining, created_at: nowIso() };
@@ -608,7 +640,7 @@ function Staff({ store, setStore, addMessage, logout }: { store: Store; setStore
               <CustomerDetails customer={selected} pass={pass} />
               <div>
                 <h3 className="text-2xl font-black mb-3">Redeem meal</h3>
-                <select className="input mb-4" value={itemName} onChange={(e)=>setItemName(e.target.value)}>{eligible.map((i)=><option key={i.name}>{i.name} — {i.category} — {money(i.price)}</option>)}</select>
+                <select className="input mb-4" value={itemName} onChange={(e)=>setItemName(e.target.value)} disabled={!selectedMealOptions.length}>{selectedMealOptions.length ? selectedMealOptions.map((i, idx)=><option key={`${i.name}-${idx}`} value={i.name}>{i.name} — selected in order — {money(i.price)}</option>) : <option>No selected meals on this customer pass</option>}</select>
                 <div className="flex flex-wrap gap-3">
                   <button className="btn-primary" onClick={redeem}>Redeem selected meal</button>
                   <button className="btn-secondary" onClick={()=>addMessage(selected.id,"balance","Your Afghan Kabob balance",`You have ${pass ? pass.meals_included-pass.meals_used : 0} meals remaining.`)}>Send balance</button>
@@ -617,16 +649,18 @@ function Staff({ store, setStore, addMessage, logout }: { store: Store; setStore
             </div>
             <QrPanel customer={selected} size={230} />
           </div>
+          <SelectedMealsPanel items={selectedMealItems} />
           <CustomerTables customer={selected} store={store}/>
+          <StaffEditPanel store={store} setStore={setStore} editCode={editCode} setEditCode={setEditCode} editUnlocked={editUnlocked} setEditUnlocked={setEditUnlocked} addAuditLog={addAuditLog} />
         </div>}
       </div>
     </section>
   );
 }
 
-function Owner({ store, setStore, logout }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; logout: () => void }) {
+function Owner({ store, setStore, addAuditLog, logout }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; addAuditLog: (a: string, e: string, n: string, b: string | null, af: string | null) => Promise<void>; logout: () => void }) {
   const [q, setQ] = useState("");
-  const [selectedTab, setSelectedTab] = useState<"customers" | "activity" | "messages" | "menu" | "offers">("customers");
+  const [selectedTab, setSelectedTab] = useState<"customers" | "activity" | "messages" | "menu" | "offers" | "changes">("customers");
   const [editingName, setEditingName] = useState(store.menuItems[0]?.name || "");
   const editingItem = store.menuItems.find((i) => i.name === editingName) || store.menuItems[0];
   const [draft, setDraft] = useState<MenuItem>(editingItem || { name: "", category: "Kabob", price: 0, image_url: "" });
@@ -641,6 +675,8 @@ function Owner({ store, setStore, logout }: { store: Store; setStore: React.Disp
 
   async function saveMenuItem() {
     if (!draft.name.trim()) return;
+    const before = store.menuItems.find((i) => i.name === editingName);
+    await addAuditLog(before ? "updated_menu_item" : "created_menu_item", "menu_item", draft.name, before ? JSON.stringify(before) : null, JSON.stringify(draft));
     setStore((s) => ({
       ...s,
       menuItems: s.menuItems.some((i) => i.name === editingName)
@@ -653,8 +689,9 @@ function Owner({ store, setStore, logout }: { store: Store; setStore: React.Disp
     }
   }
 
-  function updateOffer(type: "birthdayDiscount" | "anniversaryDiscount", value: string) {
+  async function updateOffer(type: "birthdayDiscount" | "anniversaryDiscount", value: string) {
     const percent = Number(value) || 0;
+    await addAuditLog("updated_offer_setting", "offer_setting", type, String(store[type]), String(percent));
     setStore((s) => ({ ...s, [type]: percent }));
   }
 
@@ -681,7 +718,8 @@ function Owner({ store, setStore, logout }: { store: Store; setStore: React.Disp
           ["activity", "Activity log"],
           ["messages", "Email / SMS"],
           ["menu", "Menu listings"],
-          ["offers", "Offer settings"]
+          ["offers", "Offer settings"],
+          ["changes", "Change log"]
         ].map(([key,label]) => <button key={key} onClick={()=>setSelectedTab(key as any)} className={selectedTab === key ? "btn-primary" : "btn-secondary"}>{label}</button>)}
       </div>
 
@@ -713,7 +751,80 @@ function Owner({ store, setStore, logout }: { store: Store; setStore: React.Disp
       </div>}
 
       {selectedTab === "offers" && <div className="card p-6 md:p-8 max-w-[760px]"><h2 className="text-3xl font-black mb-5">Offer settings</h2><div className="grid md:grid-cols-2 gap-5"><label><span className="label">Birthday discount %</span><input className="input" type="number" value={store.birthdayDiscount} onChange={(e)=>updateOffer("birthdayDiscount", e.target.value)}/></label><label><span className="label">Anniversary discount %</span><input className="input" type="number" value={store.anniversaryDiscount} onChange={(e)=>updateOffer("anniversaryDiscount", e.target.value)}/></label></div><p className="text-sm text-[#74675d] font-semibold mt-4">These settings control the birthday and anniversary offers shown in the owner messaging workflow.</p></div>}
+
+      {selectedTab === "changes" && <History title="Change log" headers={["Date","Changed by","Action","Entity","Before","After"]} rows={(store.auditLogs || []).map((l)=>[new Date(l.created_at).toLocaleString(), l.actor_name, l.action, `${l.entity_type}: ${l.entity_name}`, l.before_value || "—", l.after_value || "—"])}/>}
     </section>
+  );
+}
+
+
+function SelectedMealsPanel({ items }: { items: OrderItem[] }) {
+  return (
+    <div className="card p-6">
+      <h2 className="text-2xl font-black mb-4">Meals selected in this pass</h2>
+      {items.length ? (
+        <div className="grid md:grid-cols-2 gap-3">
+          {items.map((item) => (
+            <div key={`${item.name}-${item.quantity}`} className="card-soft p-4 flex justify-between gap-4">
+              <div><div className="font-black">{item.name}</div><div className="text-sm font-bold text-[#74675d]">{item.category}</div></div>
+              <div className="font-black text-kabob-green">x{item.quantity}</div>
+            </div>
+          ))}
+        </div>
+      ) : <p className="text-[#74675d] font-semibold">No selected meals found for this customer. Create or renew a meal pass first.</p>}
+    </div>
+  );
+}
+
+function StaffEditPanel({ store, setStore, editCode, setEditCode, editUnlocked, setEditUnlocked, addAuditLog }: { store: Store; setStore: React.Dispatch<React.SetStateAction<Store>>; editCode: string; setEditCode: (v: string) => void; editUnlocked: boolean; setEditUnlocked: (v: boolean) => void; addAuditLog: (a: string, e: string, n: string, b: string | null, af: string | null) => Promise<void>; }) {
+  const [editingName, setEditingName] = useState(store.menuItems[0]?.name || "");
+  const item = store.menuItems.find((i) => i.name === editingName) || store.menuItems[0] || { name: "", category: "Kabob", price: 0, image_url: "" };
+  const [draft, setDraft] = useState<MenuItem>(item);
+
+  useEffect(() => {
+    const next = store.menuItems.find((i) => i.name === editingName) || store.menuItems[0];
+    if (next) setDraft({ ...next });
+  }, [editingName, store.menuItems]);
+
+  async function save() {
+    const before = store.menuItems.find((i) => i.name === editingName);
+    await addAuditLog(before ? "staff_updated_menu_item" : "staff_created_menu_item", "menu_item", draft.name, before ? JSON.stringify(before) : null, JSON.stringify(draft));
+    setStore((s) => ({
+      ...s,
+      menuItems: s.menuItems.some((i) => i.name === editingName)
+        ? s.menuItems.map((i) => i.name === editingName ? { ...draft, price: Number(draft.price) } : i)
+        : [{ ...draft, price: Number(draft.price) }, ...s.menuItems]
+    }));
+    if (isSupabaseConfigured) {
+      await supabaseBrowser()?.from("menu_items").upsert({ name: draft.name, category: draft.category, price: Number(draft.price), image_url: draft.image_url || null }, { onConflict: "name" });
+    }
+  }
+
+  return (
+    <div className="card p-6">
+      <h2 className="text-2xl font-black mb-2">Manager edits</h2>
+      <p className="text-[#74675d] font-semibold mb-5">Staff can update menu listings only with the manager code. Every change is saved in the owner change log.</p>
+      {!editUnlocked ? (
+        <div className="flex flex-col sm:flex-row gap-3 max-w-xl">
+          <input className="input" value={editCode} onChange={(e)=>setEditCode(e.target.value)} placeholder="Enter manager code" type="password" />
+          <button className="btn-primary" onClick={()=> editCode === store.managerEditCode ? setEditUnlocked(true) : alert("Invalid manager code")}>Unlock edits</button>
+        </div>
+      ) : (
+        <div className="grid lg:grid-cols-[300px_1fr] gap-6">
+          <div className="space-y-2 max-h-[420px] overflow-auto">
+            <button className="btn-primary w-full mb-2" onClick={()=>{ setEditingName("new"); setDraft({ name: "", category: "Kabob", price: 0, image_url: "" }); }}>Add new item</button>
+            {store.menuItems.map((m)=><button key={m.name} className={`w-full text-left border rounded-2xl p-3 ${editingName === m.name ? "border-kabob-green bg-kabob-cream" : "border-kabob-sand"}`} onClick={()=>setEditingName(m.name)}><div className="font-black">{m.name}</div><div className="text-sm text-[#74675d]">{m.category} • {money(m.price)}</div></button>)}
+          </div>
+          <div className="grid md:grid-cols-2 gap-5">
+            <label><span className="label">Item name</span><input className="input" value={draft.name} onChange={(e)=>setDraft({...draft, name:e.target.value})}/></label>
+            <label><span className="label">Category</span><select className="input" value={draft.category} onChange={(e)=>setDraft({...draft, category:e.target.value})}>{["Kabob","Donair","Specials","Platters","Sides","Drinks"].map(c=><option key={c}>{c}</option>)}</select></label>
+            <label><span className="label">Price</span><input className="input" type="number" step="0.01" value={draft.price} onChange={(e)=>setDraft({...draft, price:Number(e.target.value)})}/></label>
+            <label><span className="label">Image URL</span><input className="input" value={draft.image_url || ""} onChange={(e)=>setDraft({...draft, image_url:e.target.value})}/></label>
+            <div className="md:col-span-2"><button className="btn-primary" onClick={save}>Save change</button></div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

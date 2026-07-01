@@ -132,3 +132,28 @@ for select to authenticated using (true);
 drop policy if exists "offer_settings_write_authenticated" on public.offer_settings;
 create policy "offer_settings_write_authenticated" on public.offer_settings
 for all to authenticated using (true) with check (true);
+
+-- v7: audit/change log for menu, offer, and staff/owner changes.
+create table if not exists audit_logs (
+  id uuid primary key default gen_random_uuid(),
+  actor_id uuid references profiles(id),
+  actor_name text not null,
+  action text not null,
+  entity_type text not null,
+  entity_name text not null,
+  before_value text,
+  after_value text,
+  created_at timestamp with time zone default now()
+);
+
+create index if not exists audit_logs_created_idx on audit_logs(created_at desc);
+
+alter table public.audit_logs enable row level security;
+
+drop policy if exists "audit_logs_read_authenticated" on public.audit_logs;
+create policy "audit_logs_read_authenticated" on public.audit_logs
+for select to authenticated using (true);
+
+drop policy if exists "audit_logs_insert_authenticated" on public.audit_logs;
+create policy "audit_logs_insert_authenticated" on public.audit_logs
+for insert to authenticated with check (true);

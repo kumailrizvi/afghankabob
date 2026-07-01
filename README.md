@@ -112,3 +112,13 @@ values ('PASTE_AUTH_USER_ID', 'owner', 'Afghan Kabob Owner', 'owner@afghankabob.
 ```
 
 If you want PIN-only login for early testing, set `pin_code` on those profiles and use that value as the password/PIN.
+
+## v7 staff/owner changes
+
+- Staff redemption dropdown now uses the meals the customer selected in their latest meal-pass order, instead of showing the entire eligible menu.
+- Customer pass details are shown as readable profile rows instead of small stat cards.
+- Staff can edit menu listings only after entering a manager code. Default local/demo manager code is `4321`.
+- Owner can edit menu listings and offer settings without the staff manager code.
+- Every menu/offer edit is added to `audit_logs` and shown in Owner → Change log.
+
+Run the added SQL in `supabase/schema.sql` to create the `audit_logs` table and policies.
